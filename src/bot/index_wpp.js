@@ -34,6 +34,30 @@ async function start() {
   // Passa o client do WPPConnect para o scheduler (lembretes no grupo)
   iniciarScheduler(client);
 
+  // Escaneia grupos existentes na inicializacao (captura grupos ja registrados antes do bot)
+  setTimeout(async function() {
+    try {
+      var chats = await client.getAllChats();
+      var grupos = chats.filter(function(c) { return c.isGroup; });
+      console.log('[WPP] Grupos encontrados na inicializacao: ' + grupos.length);
+      for (var i = 0; i < grupos.length; i++) {
+        var g = grupos[i];
+        var gid = g.id && g.id._serialized ? g.id._serialized : (g.chatId || g.id);
+        if (gid) {
+          var [existente] = await db.execute('SELECT id FROM grupos WHERE whatsapp_id = ?', [gid]);
+          if (existente.length === 0) {
+            console.log('[WPP] Registrando grupo nao cadastrado:', g.name || gid);
+            await registrarGrupo(client, gid);
+          } else {
+            console.log('[WPP] Grupo ja cadastrado:', g.name || gid);
+          }
+        }
+      }
+    } catch(e) {
+      console.error('[WPP] Erro no scan inicial de grupos:', e.message);
+    }
+  }, 5000); // aguarda 5s para o client estabilizar
+
   // ============================================================
   // AUTO-SETUP: bot adicionado ao grupo
   // ============================================================
