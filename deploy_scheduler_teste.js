@@ -7,6 +7,7 @@
  *    - Resto → adminPoll (comportamento atual)
  *
  * 2. Ativa MODO_TESTE = true no scheduler.js (lembretes a cada 3min)
+ *    - Filtra: envia lembretes APENAS para NUMERO_TESTE (5511963456139)
  *
  * Apos testar, rode deploy_scheduler_producao.js para voltar MODO_TESTE = false
  */
@@ -80,22 +81,46 @@ if (indexContent.match(oldPollResponse)) {
 }
 
 // ============================================================
-// PATCH 2: scheduler.js — MODO_TESTE = true
+// PATCH 2: scheduler.js — MODO_TESTE = true + NUMERO_TESTE
 // ============================================================
 
 var schedulerPath = BASE + '/src/bot/scheduler.js';
 var schedulerContent = fs.readFileSync(schedulerPath, 'utf8');
 
+// Ativa MODO_TESTE
 if (schedulerContent.includes('MODO_TESTE = false')) {
   schedulerContent = schedulerContent.replace('MODO_TESTE = false', 'MODO_TESTE = true');
-  fs.writeFileSync(schedulerPath, schedulerContent);
-  console.log('[OK] scheduler.js - MODO_TESTE = true (lembretes a cada 3min)');
-} else if (schedulerContent.includes('MODO_TESTE = true')) {
-  console.log('[SKIP] scheduler.js - MODO_TESTE ja era true');
+  console.log('[OK] scheduler.js - MODO_TESTE = true');
 } else {
-  console.log('[SKIP] scheduler.js - flag MODO_TESTE nao encontrada');
+  console.log('[SKIP] scheduler.js - MODO_TESTE ja era true');
 }
 
+// Adiciona NUMERO_TESTE logo apos MODO_TESTE (se ainda nao existe)
+if (!schedulerContent.includes('NUMERO_TESTE')) {
+  schedulerContent = schedulerContent.replace(
+    /var MODO_TESTE = (true|false);/,
+    'var MODO_TESTE = true;\nvar NUMERO_TESTE = \'5511963456139@c.us\'; // filtro de teste'
+  );
+  console.log('[OK] scheduler.js - NUMERO_TESTE adicionado');
+}
+
+// Adiciona filtro no loop de envio de lembretes
+// Filtra para enviar so para NUMERO_TESTE quando MODO_TESTE = true
+if (!schedulerContent.includes('MODO_TESTE && jogador.whatsapp_id !== NUMERO_TESTE')) {
+  schedulerContent = schedulerContent.replace(
+    "if (jogador.whatsapp_id.startsWith('fake')) {",
+    "if (MODO_TESTE && jogador.whatsapp_id !== NUMERO_TESTE) {\n      // Modo teste: pula quem nao e o numero de teste\n      await db.execute('INSERT IGNORE INTO lembretes_enviados (partida_id, jogador_id, tipo) VALUES (?, ?, ?)', [partida.id, jogador.id, tipo]);\n      continue;\n    }\n    if (jogador.whatsapp_id.startsWith('fake')) {"
+  );
+  console.log('[OK] scheduler.js - filtro NUMERO_TESTE aplicado no loop');
+} else {
+  console.log('[SKIP] scheduler.js - filtro ja aplicado');
+}
+
+fs.writeFileSync(schedulerPath, schedulerContent);
+
 console.log('\nReinicie: pm2 restart appfut-meta --update-env');
+console.log('\nNo modo teste:');
+console.log('  - Lembretes disparados a cada 3 minutos');
+console.log('  - Envio apenas para: 5511963456139');
 console.log('\nPara desativar modo teste apos validar:');
 console.log('  node deploy_scheduler_producao.js && pm2 restart appfut-meta --update-env');
