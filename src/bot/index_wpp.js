@@ -188,19 +188,24 @@ async function registrarGrupo(client, groupId) {
 
     for (var i = 0; i < members.length; i++) {
       var member = members[i];
-      var wid = member.id || member._serialized || member;
+      // id pode ser objeto {server, user, _serialized} ou string
+      var midObj = member.id || member;
+      var midStr = typeof midObj === 'object'
+        ? (midObj._serialized || (midObj.user + '@' + midObj.server))
+        : String(midObj);
+
       var nome = member.pushname || member.name || member.notify || null;
       var isAdmin = member.isAdmin || member.isSuperAdmin || false;
 
-      await registrarMembro(grupoDbId, wid, nome);
+      await registrarMembro(grupoDbId, midStr, nome);
 
       // Registra admin
       if (isAdmin) {
         await db.execute(
           'INSERT IGNORE INTO admins (grupo_id, whatsapp_id) VALUES (?, ?)',
-          [grupoDbId, wid]
+          [grupoDbId, midStr]
         );
-        console.log('[WPP] Admin registrado:', wid);
+        console.log('[WPP] Admin registrado:', midStr);
       }
     }
 
@@ -212,7 +217,14 @@ async function registrarGrupo(client, groupId) {
 
 async function registrarMembro(grupoId, wid, nome) {
   try {
-    if (!wid || wid === 'false' || wid.includes('bot')) return;
+    // wid pode ser objeto {server, user, _serialized} ou string
+    var widStr = typeof wid === 'object'
+      ? (wid._serialized || (wid.user + '@' + wid.server))
+      : String(wid);
+
+    if (!widStr || widStr === 'false' || widStr === 'undefined') return;
+
+    var wid = widStr; // usa sempre a string daqui pra frente
 
     var nomeUsar = nome || 'Jogador';
 
