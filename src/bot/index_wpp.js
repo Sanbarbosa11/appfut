@@ -159,7 +159,12 @@ async function registrarGrupo(client, groupId) {
     var chat = await client.getChatById(groupId);
     if (!chat) { console.log('[WPP] Chat nao encontrado:', groupId); return; }
 
-    var nomeGrupo = chat.name || chat.formattedTitle || 'Grupo ' + groupId;
+    var nomeGrupo = chat.name
+      || chat.formattedTitle
+      || (chat.groupMetadata && chat.groupMetadata.subject)
+      || chat.subject
+      || chat.title
+      || 'Grupo ' + groupId;
 
     // Insere grupo se nao existe
     var [existente] = await db.execute('SELECT id FROM grupos WHERE whatsapp_id = ?', [groupId]);
