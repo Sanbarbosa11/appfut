@@ -278,7 +278,7 @@ async function processarListaGrupo(client, message) {
     var grupo = grupos[0];
 
     var [partidas] = await db.execute(
-      'SELECT id, data_partida, horario_inicio, horario_fim, max_jogadores FROM partidas WHERE grupo_id = ? AND status = "aberta" ORDER BY data_partida ASC LIMIT 1',
+      'SELECT p.id, p.data_partida, p.max_jogadores, g.horario_inicio, g.horario_fim FROM partidas p JOIN grupos g ON p.grupo_id = g.id WHERE p.grupo_id = ? AND p.status = "aberta" ORDER BY p.data_partida ASC LIMIT 1',
       [grupo.id]
     );
     if (partidas.length === 0) {
@@ -288,8 +288,16 @@ async function processarListaGrupo(client, message) {
     var partida = partidas[0];
 
     var [confirmados] = await db.execute(
-      'SELECT j.nome FROM presencas p JOIN jogadores j ON p.jogador_id = j.id WHERE p.partida_id = ? AND p.status = "confirmado" ORDER BY j.nome',
+      'SELECT j.nome FROM presencas pr JOIN jogadores j ON pr.jogador_id = j.id WHERE pr.partida_id = ? AND pr.status = "confirmado" ORDER BY pr.confirmado_em ASC',
       [partida.id]
+    );
+    var [ausentes] = await db.execute(
+      'SELECT j.nome FROM presencas pr JOIN jogadores j ON pr.jogador_id = j.id WHERE pr.partida_id = ? AND pr.status = "ausente" ORDER BY j.nome',
+      [partida.id]
+    );
+    var [duvida] = await db.execute(
+      'SELECT j.nome FROM grupo_jogadores gj JOIN jogadores j ON gj.jogador_id = j.id WHERE gj.grupo_id = ? AND gj.ativo = TRUE AND gj.jogador_id NOT IN (SELECT jogador_id FROM presencas WHERE partida_id = ?) ORDER BY j.nome',
+      [grupo.id, partida.id]
     );
     var [avulsos] = await db.execute(
       'SELECT nome FROM avulsos WHERE partida_id = ? ORDER BY nome',
@@ -304,14 +312,25 @@ async function processarListaGrupo(client, message) {
     var max = partida.max_jogadores || 20;
 
     var linhas = ['\u26bd *' + grupo.nome + '* \u2014 ' + dataStr + (horario ? ' \u00e0s ' + horario : '')];
-    linhas.push('Confirmados: *' + total + '/' + max + '*\n');
+    linhas.push('\ud83d\udccb *' + total + '/' + max + ' confirmados*\n');
 
+    linhas.push('\u2705 *Confirmados (' + confirmados.length + '):*');
     if (confirmados.length > 0) {
-      linhas.push('*Jogadores:*');
       confirmados.forEach(function(j, i) { linhas.push((i + 1) + '. ' + j.nome); });
-    }
+    } else { linhas.push('Nenhum confirmado ainda'); }
+
+    linhas.push('\n\u274c *Ausentes (' + ausentes.length + '):*');
+    if (ausentes.length > 0) {
+      ausentes.forEach(function(j, i) { linhas.push((i + 1) + '. ' + j.nome); });
+    } else { linhas.push('Nenhum ausente'); }
+
+    linhas.push('\n\u2753 *D\u00favida (' + duvida.length + '):*');
+    if (duvida.length > 0) {
+      duvida.forEach(function(j) { linhas.push('\u00b7 ' + j.nome); });
+    } else { linhas.push('Todos responderam!'); }
+
     if (avulsos.length > 0) {
-      linhas.push('\n*Avulsos:*');
+      linhas.push('\n\ud83d\udd38 *Avulsos (' + avulsos.length + '):*');
       avulsos.forEach(function(a, i) { linhas.push((i + 1) + '. ' + a.nome); });
     }
 
