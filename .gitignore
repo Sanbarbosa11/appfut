@@ -1,0 +1,16 @@
+node_modules/
+.env
+tokens/
+*.log
+.claude/
+
+# Scripts temporarios de deploy/fix/patch/test
+deploy_*.js
+deploy_*.sh
+fix_*.js
+patch_*.js
+test_*.js
+
+# Site e imagens nao relacionados ao bot
+site/
+imagens/
