@@ -11,6 +11,16 @@
 
 require('dotenv').config();
 
+['log', 'error', 'warn'].forEach(function(method) {
+  var orig = console[method].bind(console);
+  console[method] = function() {
+    var ts = new Date().toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour12: false });
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift('[' + ts + ']');
+    orig.apply(console, args);
+  };
+});
+
 var wppconnect = require('@wppconnect-team/wppconnect');
 var db = require('../database/connection');
 var { iniciarScheduler } = require('./scheduler');
@@ -34,6 +44,30 @@ function normalizar(s) {
   return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 }
 
+// Extrai apenas os digitos do WID.
+// Aceita: string "5511...@c.us" | objeto Wid {_serialized, user, server} | toString custom
+function extrairNumero(wid) {
+  if (wid === null || wid === undefined) return null;
+  var s = '';
+  if (typeof wid === 'string') {
+    s = wid;
+  } else if (typeof wid === 'object') {
+    s = wid._serialized
+      || (wid.user && wid.server ? wid.user + '@' + wid.server : '')
+      || wid.user
+      || '';
+    // Fallback: toString retorna algo com @ (formato WID)
+    if (!s && typeof wid.toString === 'function') {
+      var ts = wid.toString();
+      if (ts && ts !== '[object Object]' && ts.indexOf('@') !== -1) s = ts;
+    }
+  } else {
+    s = String(wid);
+  }
+  var digits = String(s).replace(/@.*$/, '').replace(/\D/g, '');
+  return digits || null;
+}
+
 async function start() {
   var client = await wppconnect.create({
     session: 'appfut-grupo',
@@ -42,7 +76,16 @@ async function start() {
     autoClose: 0,
     whatsappVersion: '2.3000.1023569519',
     puppeteerOptions: {
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--ignore-certificate-errors']
+      protocolTimeout: 120000,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--ignore-certificate-errors',
+        '--disable-dev-shm-usage',
+        '--disable-extensions',
+        '--disable-gpu',
+        '--no-first-run'
+      ]
     },
     catchQR: function(base64Qr, asciiQR) {
       console.log('[WPP] QR Code gerado — escaneie com o WhatsApp:');
@@ -60,6 +103,84 @@ async function start() {
   });
 
   console.log('[WPP] Bot grupo iniciado!');
+
+  // Cache das identidades do bot: @c.us (numero real) e @lid (novo formato privacidade)
+  // Eventos onParticipantsChanged vem como @lid; getHostDevice em algumas versoes nao expoe.
+  // Estrategias em ordem: hostDevice.wid -> WPP.conn via page.evaluate -> env BOT_WHATSAPP_NUMBER.
+  var botNumCus = null;
+  var botNumLid = null;
+  (async function identificarBot() {
+    // 1. getHostDevice (algumas versoes retornam info.wid/info.me)
+    try {
+      var info = await client.getHostDevice();
+      try { console.log('[WPP] hostDevice dump:', JSON.stringify(info)); } catch(e) {}
+      var cand = info && (info.wid || info.me
+        || (info.id && typeof info.id === 'object' ? info.id : null));
+      if (cand) botNumCus = extrairNumero(cand);
+    } catch(e) {
+      console.error('[WPP] Erro getHostDevice:', e.message || e);
+    }
+
+    // 2. page.evaluate no WPP.conn (wa-js interno) - cobre versoes onde hostDevice e minimo
+    try {
+      if (client.page && typeof client.page.evaluate === 'function') {
+        var pd = await client.page.evaluate(function() {
+          var out = {};
+          try {
+            if (typeof WPP !== 'undefined' && WPP.conn) {
+              var meObj = WPP.conn.me || null;
+              if (meObj) out.me = meObj._serialized || (meObj.user && meObj.server ? meObj.user + '@' + meObj.server : '');
+              if (typeof WPP.conn.getMaybeMeLidUser === 'function') {
+                var lidObj = WPP.conn.getMaybeMeLidUser();
+                if (lidObj) out.meLid = lidObj._serialized || (lidObj.user && lidObj.server ? lidObj.user + '@' + lidObj.server : '');
+              }
+              if (typeof WPP.conn.getMyUserId === 'function') {
+                var muid = WPP.conn.getMyUserId();
+                if (muid) out.myUserId = muid._serialized || (muid.user && muid.server ? muid.user + '@' + muid.server : '');
+              }
+            }
+          } catch(e) { out.error = String((e && e.message) || e); }
+          return out;
+        });
+        try { console.log('[WPP] WPP.conn dump:', JSON.stringify(pd)); } catch(e) {}
+        if (pd) {
+          if (!botNumCus) botNumCus = extrairNumero(pd.me || pd.myUserId);
+          if (!botNumLid) botNumLid = extrairNumero(pd.meLid);
+        }
+      }
+    } catch(e) {
+      console.error('[WPP] Falha page.evaluate WPP.conn:', e.message || e);
+    }
+
+    // 3. env BOT_WHATSAPP_NUMBER como fallback (ex: 5511999999999)
+    if (!botNumCus && process.env.BOT_WHATSAPP_NUMBER) {
+      botNumCus = String(process.env.BOT_WHATSAPP_NUMBER).replace(/\D/g, '') || null;
+      console.log('[WPP] Usando BOT_WHATSAPP_NUMBER do env:', botNumCus);
+    }
+
+    // 4. Se temos @c.us mas nao @lid, resolver via getContact
+    if (botNumCus && !botNumLid) {
+      try {
+        var cctx = await client.getContact(botNumCus + '@c.us');
+        try { console.log('[WPP] getContact(bot@c.us) dump:', JSON.stringify(cctx)); } catch(e) {}
+        if (cctx) {
+          if (cctx.lid) botNumLid = extrairNumero(cctx.lid);
+          if (!botNumLid && cctx.id) {
+            var idRaw = cctx.id._serialized || String(cctx.id);
+            if (idRaw.indexOf('@lid') !== -1) botNumLid = extrairNumero(idRaw);
+          }
+        }
+      } catch(e) {
+        console.error('[WPP] Falha getContact(bot@c.us):', e.message || e);
+      }
+    }
+
+    console.log('[WPP] Bot identidade FINAL - @c.us num:', botNumCus, ' @lid num:', botNumLid);
+    if (!botNumCus && !botNumLid) {
+      console.error('[WPP] ATENCAO: nao foi possivel identificar o bot. Deteccao de entrada/saida vai falhar.');
+      console.error('[WPP] Adicione BOT_WHATSAPP_NUMBER=5511XXXXXXXX no .env e reinicie.');
+    }
+  })();
 
   // Endpoint interno: Meta bot consulta para verificar se numero e admin do grupo
   var httpServer = require('http');
@@ -130,7 +251,7 @@ async function start() {
     }, 5000);
   })();
 
-  // Keepalive com watchdog — alerta admin se conexao cair
+  // Keepalive com watchdog — alerta admin se conexao cair + exit em falha persistente
   var keepaliveFalhas = 0;
   setInterval(async function() {
     try {
@@ -139,7 +260,10 @@ async function start() {
       keepaliveFalhas = 0; // reset ao ter sucesso
     } catch(e) {
       keepaliveFalhas++;
-      console.error('[WPP] Keepalive falhou (' + keepaliveFalhas + 'x):', e.message || e);
+      // Log apenas 1a/2a/3a falha e depois a cada 10x - evita spam em zumbi
+      if (keepaliveFalhas <= 3 || keepaliveFalhas % 10 === 0) {
+        console.error('[WPP] Keepalive falhou (' + keepaliveFalhas + 'x):', e.message || e);
+      }
       if (keepaliveFalhas === 3) {
         alertarAdmin(
           '\u26a0\ufe0f *Bot do grupo perdeu conex\u00e3o!*\n\n' +
@@ -148,6 +272,12 @@ async function start() {
           '`pm2 restart appfut-grupo`\n\n' +
           'Logs: `pm2 logs appfut-grupo --lines 30 --nostream`'
         );
+      }
+      // Depois de 5 falhas seguidas (~10 min) mata o processo para PM2 reiniciar
+      // com Chromium novo - recupera de "detached Frame" e similares
+      if (keepaliveFalhas >= 5) {
+        console.error('[WPP] 5 falhas seguidas - encerrando processo para PM2 reiniciar.');
+        process.exit(1);
       }
     }
   }, 2 * 60 * 1000);
@@ -205,21 +335,25 @@ async function start() {
 
       if (!groupId || !participantId) return;
 
-      var info = await client.getHostDevice();
-      var botWid = info && (info.wid || info.id);
-      var botId = botWid ? String(botWid).split('@')[0] + '@c.us' : null;
+      var partNum = extrairNumero(participantId);
+      var isBot = !!(partNum && (
+        (botNumCus && partNum === botNumCus) ||
+        (botNumLid && partNum === botNumLid)
+      ));
 
-      console.log('[WPP] onParticipantsChanged action=' + action + ' who=' + participantId + ' grupo=' + groupId);
+      console.log('[WPP] onParticipantsChanged action=' + action + ' who=' + participantId +
+                  ' grupo=' + groupId + ' partNum=' + partNum +
+                  ' botCus=' + botNumCus + ' botLid=' + botNumLid + ' isBot=' + isBot);
 
       // BOT ADICIONADO ao grupo
-      if (action === 'add' && botId && String(participantId).includes(String(botWid).split('@')[0])) {
+      if (action === 'add' && isBot) {
         console.log('[WPP] Bot adicionado ao grupo:', groupId);
         await registrarGrupo(client, groupId);
         return;
       }
 
-      // BOT REMOVIDO do grupo → soft delete
-      if ((action === 'remove' || action === 'leave') && botId && String(participantId).includes(String(botWid).split('@')[0])) {
+      // BOT REMOVIDO do grupo → soft delete + alerta
+      if ((action === 'remove' || action === 'leave') && isBot) {
         console.log('[WPP] Bot removido do grupo:', groupId);
         await limparGrupo(groupId);
         return;
@@ -230,16 +364,17 @@ async function start() {
         var [grupos] = await db.execute('SELECT id FROM grupos WHERE whatsapp_id = ?', [groupId]);
         if (grupos.length === 0) return;
         await registrarMembro(grupos[0].id, participantId, null);
+        return;
       }
 
-      // Membro saiu/removido
+      // Membro normal removido/saiu → apenas desativa no banco (silencioso, sem alerta)
       if (action === 'remove' || action === 'leave') {
         var [grupos2] = await db.execute('SELECT id FROM grupos WHERE whatsapp_id = ?', [groupId]);
         if (grupos2.length === 0) return;
         var [jog] = await db.execute('SELECT id FROM jogadores WHERE whatsapp_id = ?', [participantId]);
         if (jog.length > 0) {
           await db.execute('UPDATE grupo_jogadores SET ativo = FALSE WHERE grupo_id = ? AND jogador_id = ?', [grupos2[0].id, jog[0].id]);
-          console.log('[WPP] Membro desativado:', participantId);
+          console.log('[WPP] Membro desativado no grupo (silencioso):', participantId);
         }
       }
     } catch(e) {

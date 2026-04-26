@@ -14,7 +14,7 @@
 require('dotenv').config();
 
 var express = require('express');
-var db = require('../database/connection');
+var db    = require('../database/connection');
 
 var { client, sendText: metaSendText } = require('./whatsapp/metaClient');
 var { router: webhookRouter, setHandlers } = require('./whatsapp/webhook');
@@ -123,7 +123,7 @@ async function entrarGrupo(sender, senderName, grupoId) {
       'SELECT id, nome, whatsapp_id FROM grupos WHERE id = ? AND ativo = TRUE', [grupoId]
     );
     if (grupo.length === 0) {
-      await metaSendText(sender, '\u26a0\ufe0f Link inv\u00e1lido ou grupo n\u00e3o encontrado.');
+      await metaSendText(sender, '⚠️ Link inválido ou grupo não encontrado.');
       return;
     }
 
@@ -138,13 +138,7 @@ async function entrarGrupo(sender, senderName, grupoId) {
       [grupo[0].id, jog[0].id]
     );
 
-    // Verifica via WPPConnect se este sender e admin real do grupo
     var isAdmin = await verificarAdminViaWpp(grupo[0].whatsapp_id, sender);
-
-    // Fallback: WPP nao consegue resolver @lid→@c.us na maioria dos casos.
-    // Se ainda nao ha nenhum admin @c.us registrado para este grupo,
-    // o primeiro clique em "entrar X" vira admin automaticamente.
-    // (o link fica na mensagem de boas-vindas do grupo — so membros tem acesso)
     if (!isAdmin) {
       var [adminsCus] = await db.execute(
         'SELECT id FROM admins WHERE grupo_id = ? AND whatsapp_id NOT LIKE "%@lid" LIMIT 1',
@@ -152,22 +146,22 @@ async function entrarGrupo(sender, senderName, grupoId) {
       );
       if (adminsCus.length === 0) {
         isAdmin = true;
-        console.log('[entrarGrupo] Admin por fallback (nenhum admin @c.us registrado):', sender, 'grupo', grupo[0].id);
+        console.log('[entrarGrupo] Admin por fallback:', sender, 'grupo', grupo[0].id);
       }
     }
 
     if (isAdmin) {
       await db.execute('DELETE FROM admins WHERE grupo_id = ? AND whatsapp_id LIKE "%@lid"', [grupo[0].id]);
       await db.execute('INSERT IGNORE INTO admins (grupo_id, whatsapp_id) VALUES (?, ?)', [grupo[0].id, sender]);
-      console.log('[entrarGrupo] Admin registrado automaticamente:', sender, 'grupo', grupo[0].id);
+      console.log('[entrarGrupo] Admin registrado:', sender, 'grupo', grupo[0].id);
     }
 
     console.log('[entrarGrupo]', sender, '→ grupo', grupo[0].id, grupo[0].nome, isAdmin ? '(admin)' : '');
 
     await metaSendText(sender,
-      '\u2705 *Pronto, ' + senderName + '!*\n\n' +
-      'Voc\u00ea est\u00e1 cadastrado no grupo *' + grupo[0].nome + '*.\n\n' +
-      'Agora \u00e9 s\u00f3 aguardar a pr\u00f3xima partida e confirmar presen\u00e7a aqui! \u26bd'
+      '✅ *Pronto, ' + senderName + '!*\n\n' +
+      'Você está cadastrado no grupo *' + grupo[0].nome + '*.\n\n' +
+      'Agora é só aguardar a próxima partida e confirmar presença aqui! ⚽'
     );
   } catch(e) {
     console.error('[entrarGrupo] Erro:', e);

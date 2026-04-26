@@ -11,17 +11,40 @@ async function montarListaCompleta(partidaId, grupoId, grupoNome, dataPartida, m
     [partidaId]
   );
   var [avulsos] = await db.execute(
-    'SELECT a.nome, j.nome as adicionado_por FROM avulsos a JOIN jogadores j ON a.adicionado_por = j.id WHERE a.partida_id = ? ORDER BY a.criado_em ASC',
-    [partidaId]
-  );
+  `SELECT 
+     COALESCE(j2.nome, a.nome) as nome,
+     j.nome as adicionado_por
+   FROM avulsos a
+   JOIN jogadores j ON a.adicionado_por = j.id
+   LEFT JOIN jogadores j2 ON a.jogador_id = j2.id
+   WHERE a.partida_id = ?
+   ORDER BY a.criado_em ASC`,
+  [partidaId]
+);
   var [ausentes] = await db.execute(
     'SELECT j.nome FROM ausentes a JOIN jogadores j ON a.jogador_id = j.id WHERE a.partida_id = ? ORDER BY a.criado_em ASC',
     [partidaId]
   );
   var [duvidas] = await db.execute(
-    'SELECT j.nome FROM grupo_jogadores gj JOIN jogadores j ON gj.jogador_id = j.id WHERE gj.grupo_id = ? AND gj.ativo = TRUE AND j.id NOT IN (SELECT jogador_id FROM presencas WHERE partida_id = ?) AND j.id NOT IN (SELECT jogador_id FROM ausentes WHERE partida_id = ?) ORDER BY j.nome ASC',
-    [grupoId, partidaId, partidaId]
-  );
+  `SELECT j.nome 
+   FROM grupo_jogadores gj 
+   JOIN jogadores j ON gj.jogador_id = j.id 
+   WHERE gj.grupo_id = ? 
+     AND gj.ativo = TRUE 
+     AND j.id NOT IN (
+       SELECT jogador_id FROM presencas WHERE partida_id = ?
+     )
+     AND j.id NOT IN (
+       SELECT jogador_id FROM ausentes WHERE partida_id = ?
+     )
+     AND j.id NOT IN (
+       SELECT jogador_id 
+       FROM avulsos 
+       WHERE partida_id = ? AND jogador_id IS NOT NULL
+     )
+   ORDER BY j.nome ASC`,
+  [grupoId, partidaId, partidaId, partidaId]
+);
 
   var totalPresentes = confirmados.length + avulsos.length;
   var data = new Date(dataPartida);
