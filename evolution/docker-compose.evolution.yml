@@ -1,0 +1,30 @@
+services:
+  evolution-postgres:
+    container_name: appfut-evolution-postgres
+    image: postgres:15-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DB: evolution_pg
+      POSTGRES_USER: evolution_pg_user
+      POSTGRES_PASSWORD: ${EVOLUTION_PG_PASSWORD}
+    volumes:
+      - evolution_pgdata:/var/lib/postgresql/data
+
+  evolution-api:
+    container_name: appfut-evolution
+    image: evoapicloud/evolution-api:v2.3.5
+    restart: unless-stopped
+    network_mode: host
+    env_file:
+      - .env.evolution
+    volumes:
+      - evolution_instances:/evolution/instances
+    depends_on:
+      - evolution-postgres
+
+volumes:
+  evolution_instances:
+    name: appfut_evolution_instances
+  evolution_pgdata:
+    name: appfut_evolution_pgdata

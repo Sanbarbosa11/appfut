@@ -1,0 +1,25 @@
+{
+  "name": "appfut-evolution-pilot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Piloto isolado do AppFut rodando sobre Evolution API v2.3.5",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "smoke": "node smoke_test.js",
+    "webhook": "node webhook_server.js",
+    "set-webhook": "node set_webhook.js",
+    "create-instance": "node create_instance.js",
+    "connect-instance": "node connect_instance.js",
+    "status-instance": "node status_instance.js",
+    "init-grupos": "node init_grupos.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "mysql2": "^3.11.0",
+    "node-cron": "^3.0.3"
+  }
+}

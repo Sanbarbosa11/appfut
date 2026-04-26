@@ -1,0 +1,8 @@
+# Env real (segredos - NUNCA commitar)
+.env.evolution
+
+# Dependencias Node (vem nas fases 1+)
+node_modules/
+
+# Logs locais
+*.log

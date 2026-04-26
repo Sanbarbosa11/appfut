@@ -1,0 +1,88 @@
+var db = require('../database/connection');
+
+function formatarHorario(h) {
+  if (!h) return '';
+  return String(h).replace(/:([0-9]{2})$/, '');
+}
+
+async function montarListaCompleta(partidaId, grupoId, grupoNome, dataPartida, maxJogadores, horarioInicio, horarioFim, incluirFooter) {
+  var [confirmados] = await db.execute(
+    'SELECT j.nome FROM presencas pr JOIN jogadores j ON pr.jogador_id = j.id WHERE pr.partida_id = ? ORDER BY pr.confirmado_em ASC',
+    [partidaId]
+  );
+  var [avulsos] = await db.execute(
+    `SELECT COALESCE(j2.nome, a.nome) as nome, j.nome as adicionado_por
+     FROM avulsos a
+     JOIN jogadores j ON a.adicionado_por = j.id
+     LEFT JOIN jogadores j2 ON a.jogador_id = j2.id
+     WHERE a.partida_id = ? ORDER BY a.criado_em ASC`,
+    [partidaId]
+  );
+  var [ausentes] = await db.execute(
+    'SELECT j.nome FROM ausentes a JOIN jogadores j ON a.jogador_id = j.id WHERE a.partida_id = ? ORDER BY a.criado_em ASC',
+    [partidaId]
+  );
+  var [duvidas] = await db.execute(
+    `SELECT j.nome
+     FROM grupo_jogadores gj JOIN jogadores j ON gj.jogador_id = j.id
+     WHERE gj.grupo_id = ? AND gj.ativo = TRUE
+       AND j.id NOT IN (SELECT jogador_id FROM presencas WHERE partida_id = ?)
+       AND j.id NOT IN (SELECT jogador_id FROM ausentes  WHERE partida_id = ?)
+       AND j.id NOT IN (SELECT jogador_id FROM avulsos   WHERE partida_id = ? AND jogador_id IS NOT NULL)
+     ORDER BY j.nome ASC`,
+    [grupoId, partidaId, partidaId, partidaId]
+  );
+
+  var totalPresentes = confirmados.length + avulsos.length;
+  var data = new Date(dataPartida);
+  data = new Date(data.getTime() + data.getTimezoneOffset() * 60000);
+  var dataF = data.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: '2-digit' });
+  var hi = formatarHorario(horarioInicio);
+  var hf = formatarHorario(horarioFim);
+
+  var texto = '⚽ *' + grupoNome + '*\n';
+  texto += '📅 ' + dataF + '\n';
+  if (hi) texto += '⏰ ' + hi + ' - ' + hf + '\n';
+  texto += '👥 ' + totalPresentes + '/' + maxJogadores + ' confirmados\n';
+
+  texto += '\n✅ *Confirmados (' + confirmados.length + '):*\n';
+  if (confirmados.length === 0) {
+    texto += '_Nenhum confirmado ainda_\n';
+  } else {
+    for (var c = 0; c < confirmados.length; c++) {
+      texto += (c + 1) + '. ' + confirmados[c].nome + '\n';
+    }
+  }
+
+  texto += '\n❌ *Ausentes (' + ausentes.length + '):*\n';
+  if (ausentes.length === 0) {
+    texto += '_Ninguém cancelou ainda_\n';
+  } else {
+    for (var b = 0; b < ausentes.length; b++) {
+      texto += (b + 1) + '. ' + ausentes[b].nome + '\n';
+    }
+  }
+
+  texto += '\n❓ *Dúvida (' + duvidas.length + '):*\n';
+  if (duvidas.length === 0) {
+    texto += '_Todos responderam!_\n';
+  } else {
+    for (var d = 0; d < duvidas.length; d++) {
+      texto += '· ' + duvidas[d].nome + '\n';
+    }
+  }
+
+  texto += '\n🔸 *Avulsos (' + avulsos.length + '):*\n';
+  for (var a = 0; a < avulsos.length; a++) {
+    texto += (confirmados.length + a + 1) + '. ' + avulsos[a].nome + ' _(por ' + avulsos[a].adicionado_por + ')_\n';
+  }
+
+  if (incluirFooter) {
+    var botPhone = process.env.META_BOT_NUMBER || '5511995421741';
+    texto += '\n📲 *Clique no WhatsApp:* https://wa.me/' + botPhone;
+  }
+
+  return texto;
+}
+
+module.exports = { montarListaCompleta, formatarHorario };
