@@ -16,16 +16,41 @@ require('dotenv').config();
 var express = require('express');
 var db    = require('../database/connection');
 
-var { client, sendText: metaSendText } = require('./whatsapp/metaClient');
+var { client, sendText: metaSendText, sendButtons: metaSendButtons } = require('./whatsapp/metaClient');
 var { router: webhookRouter, setHandlers } = require('./whatsapp/webhook');
 
 var { processarComandoGrupo } = require('./commands/grupo');
-var { processarComandoAdmin }  = require('./commands/admin');
+var { processarComandoAdmin, getGrupoAtivoId, setGrupoAtivo } = require('./commands/admin');
 var { confirmar }              = require('./commands/confirmar');
 var { cancelar }               = require('./commands/cancelar');
 var { lista }                  = require('./commands/lista');
 var { enviarMenuJogador, enviarMenuAdmin, enviarCriarPartida } = require('./commands/menu');
+var { alertar, agora } = require('./utils/alertar');
 var { adicionarAvulso, removerAvulso } = require('./commands/avulso');
+
+// ---------- rate limit para botao "Buscar partida" ----------
+var buscarTentativas = {};          // { sender: { count, windowStart } }
+var BUSCAR_MAX    = 2;              // respostas antes de bloquear
+var BUSCAR_JANELA = 10 * 60 * 1000; // janela de 10 minutos
+
+function usarBuscarPartida(sender) {
+  var agora = Date.now();
+  var t     = buscarTentativas[sender];
+  if (!t || (agora - t.windowStart) >= BUSCAR_JANELA) {
+    buscarTentativas[sender] = { count: 1, windowStart: agora };
+    return { permitido: true, restante: BUSCAR_MAX - 1 };
+  }
+  if (t.count >= BUSCAR_MAX) {
+    var min = Math.ceil((BUSCAR_JANELA - (agora - t.windowStart)) / 60000);
+    return { permitido: false, minutosRestantes: min };
+  }
+  t.count++;
+  return { permitido: true, restante: BUSCAR_MAX - t.count };
+}
+
+function resetarBuscarPartida(sender) {
+  delete buscarTentativas[sender];
+}
 
 // ---------- dedup de mensagens (evita processar duplicatas) ----------
 var processadas = new Set();
@@ -76,7 +101,7 @@ async function verificarVinculoOuOrientar(sender, senderName) {
 
   // Sem vinculo — busca grupos com partida aberta para mostrar links
   var [grupos] = await db.execute(
-    'SELECT g.id, g.nome FROM grupos g ' +
+    'SELECT g.id, g.nome, g.invite_token FROM grupos g ' +
     'JOIN partidas p ON p.grupo_id = g.id ' +
     'WHERE p.status = "aberta" AND g.ativo = TRUE ' +
     'ORDER BY g.nome ASC'
@@ -88,7 +113,9 @@ async function verificarVinculoOuOrientar(sender, senderName) {
 
   if (grupos.length > 0) {
     for (var i = 0; i < grupos.length; i++) {
-      var link = 'https://wa.me/' + META_NUMERO + '?text=entrar%20' + grupos[i].id;
+      // Problema 5: usar invite_token no link \u2014 nao o ID sequencial
+      var token = grupos[i].invite_token || grupos[i].id;
+      var link = 'https://wa.me/' + META_NUMERO + '?text=entrar%20' + token;
       msg += '\u26bd *' + grupos[i].nome + '*\n' + link + '\n\n';
     }
   } else {
@@ -117,13 +144,15 @@ async function verificarAdminViaWpp(groupWppId, senderCus) {
   });
 }
 
-async function entrarGrupo(sender, senderName, grupoId) {
+// Problema 5: recebe token aleatorio (hex 32 chars) em vez de ID sequencial.
+// Isso impede enumeracao de grupos (entrar 1, entrar 2, entrar 3...).
+async function entrarGrupo(sender, senderName, token) {
   try {
     var [grupo] = await db.execute(
-      'SELECT id, nome, whatsapp_id FROM grupos WHERE id = ? AND ativo = TRUE', [grupoId]
+      'SELECT id, nome, whatsapp_id FROM grupos WHERE invite_token = ? AND ativo = TRUE', [token]
     );
     if (grupo.length === 0) {
-      await metaSendText(sender, '⚠️ Link inválido ou grupo não encontrado.');
+      await metaSendText(sender, '⚠️ Link inválido ou expirado. Peça um novo link ao administrador do grupo.');
       return;
     }
 
@@ -158,10 +187,15 @@ async function entrarGrupo(sender, senderName, grupoId) {
 
     console.log('[entrarGrupo]', sender, '→ grupo', grupo[0].id, grupo[0].nome, isAdmin ? '(admin)' : '');
 
-    await metaSendText(sender,
+    // Define grupo ativo na sessão em memória e persiste no banco
+    setGrupoAtivo(sender, grupo[0].id, grupo[0].nome);
+    await db.execute('UPDATE jogadores SET grupo_preferido_id = ? WHERE whatsapp_id = ?', [grupo[0].id, sender]);
+
+    await metaSendButtons(sender,
       '✅ *Pronto, ' + senderName + '!*\n\n' +
-      'Você está cadastrado no grupo *' + grupo[0].nome + '*.\n\n' +
-      'Agora é só aguardar a próxima partida e confirmar presença aqui! ⚽'
+      'Você está cadastrado no grupo *' + grupo[0].nome + '*. ⚽\n\n' +
+      'Clique abaixo para ver o status do jogo:',
+      [{ id: 'buscar_partida', title: '⚽ Buscar partida' }]
     );
   } catch(e) {
     console.error('[entrarGrupo] Erro:', e);
@@ -185,11 +219,11 @@ async function onMessage(message) {
       return;
     }
 
-    // Vinculo direto por link do grupo: "entrar 8"
+    // Problema 5: vínculo via token hex (ex: "entrar a3f9...") — não mais ID sequencial
     if (text.startsWith('entrar ')) {
-      var grupoIdEntrar = parseInt(text.split(' ')[1]);
-      if (grupoIdEntrar) {
-        await entrarGrupo(sender, senderName, grupoIdEntrar);
+      var entrarToken = text.split(' ').slice(1).join(' ').trim();
+      if (entrarToken) {
+        await entrarGrupo(sender, senderName, entrarToken);
         return;
       }
     }
@@ -198,6 +232,21 @@ async function onMessage(message) {
     await autoRegistrar(sender, senderName);
     var vinculado = await verificarVinculoOuOrientar(sender, senderName);
     if (!vinculado) return;
+
+    // Restaura grupo preferido do jogador se a sessao em memoria expirou (ex: reinicio)
+    if (!getGrupoAtivoId(sender)) {
+      try {
+        var [jPref] = await db.execute(
+          'SELECT j.grupo_preferido_id, g.nome AS grupo_nome ' +
+          'FROM jogadores j LEFT JOIN grupos g ON g.id = j.grupo_preferido_id ' +
+          'WHERE j.whatsapp_id = ? AND j.grupo_preferido_id IS NOT NULL AND (g.ativo = TRUE OR g.ativo IS NULL)',
+          [sender]
+        );
+        if (jPref.length > 0 && jPref[0].grupo_preferido_id) {
+          setGrupoAtivo(sender, jPref[0].grupo_preferido_id, jPref[0].grupo_nome || '');
+        }
+      } catch(e) { /* nao bloquear fluxo principal */ }
+    }
 
     // Admin com argumentos → processar comando direto
     if (text.startsWith('admin ')) {
@@ -237,7 +286,8 @@ async function onMessage(message) {
       return;
     }
 
-    // Qualquer outra mensagem → menu jogador
+    // Qualquer outra mensagem → menu jogador (reseta contador de busca)
+    resetarBuscarPartida(sender);
     await enviarMenuJogador(client, sender, senderName);
 
   } catch(e) {
@@ -254,11 +304,26 @@ async function onPollResponse(response, sender, opcao) {
     var senderName = response.senderName || 'Jogador';
     var msg        = fakeMensagem(sender, senderName);
 
-    if (selectedId === 'confirmar') {
+    if (selectedId === 'buscar_partida') {
+      var buscarLimite = usarBuscarPartida(sender);
+      if (!buscarLimite.permitido) {
+        await metaSendText(sender,
+          '⏳ Você já verificou 2x recentemente.\n\n' +
+          'Tente em ~' + buscarLimite.minutosRestantes + ' min ou aguarde o adm criar a partida!'
+        );
+      } else {
+        // mostrarRetry=true se ainda tem tentativa sobrando; false na ultima
+        await enviarMenuJogador(client, sender, senderName, buscarLimite.restante > 0);
+      }
+
+    } else if (selectedId === 'confirmar') {
       await confirmar(client, msg, sender, senderName);
 
     } else if (selectedId === 'cancelar') {
       await cancelar(client, msg, sender);
+
+    } else if (selectedId === 'avulso') {
+      await adicionarAvulso(client, msg, sender, senderName);
 
     } else if (selectedId === 'lista') {
       await lista(client, msg, sender);
@@ -277,6 +342,12 @@ async function onPollResponse(response, sender, opcao) {
 
     } else if (selectedId === 'admin_desativar_todos') {
       await processarComandoAdmin(client, msg, sender, 'admin desativar todos');
+
+    } else if (selectedId === 'admin_link') {
+      await processarComandoAdmin(client, msg, sender, 'admin link');
+
+    } else if (selectedId === 'admin_sortear') {
+      await processarComandoAdmin(client, msg, sender, 'admin sortear');
 
     } else if (selectedId === 'admin_criar_ajuda') {
       await metaSendText(sender,
@@ -307,6 +378,37 @@ async function onParticipantsChanged(event) {
     console.log('[Participants] Evento:', JSON.stringify(event));
   } catch(e) {
     console.error('[onParticipantsChanged] Erro:', e);
+  }
+}
+
+// ── Monitor de saude do Evolution (fallback quando canal principal de alertas cai) ──
+var EVOLUTION_HEALTH_URL       = process.env.EVOLUTION_HEALTH_URL || 'http://127.0.0.1:3002/health';
+var ALERT_ADMIN_FALLBACK        = process.env.ALERT_ADMIN_NUMBER || '';
+var _evoFalhas = 0;
+var _evoEstado = null; // null | 'ok' | 'falhou'
+
+async function _checarEvolution() {
+  try {
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function() { ctrl.abort(); }, 5000);
+    var res  = await fetch(EVOLUTION_HEALTH_URL, { signal: ctrl.signal });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error('status ' + res.status);
+    if (_evoEstado === 'falhou') {
+      alertar('🟢 *AppFut Evolution Bot voltou!*\n⏰ ' + agora() + '\n✅ Canal de alertas normalizado.').catch(function(){});
+    }
+    _evoFalhas = 0;
+    _evoEstado = 'ok';
+  } catch(e) {
+    _evoFalhas++;
+    if (_evoFalhas >= 2 && _evoEstado !== 'falhou') {
+      _evoEstado = 'falhou';
+      if (ALERT_ADMIN_FALLBACK) {
+        metaSendText(ALERT_ADMIN_FALLBACK,
+          '🔴 *AppFut Evolution Bot — Fora do ar!*\n⏰ ' + agora() + '\n⚠️ Canal principal de alertas indisponível.\n💡 pm2 logs evolution-webhook'
+        ).catch(function(){});
+      }
+    }
   }
 }
 
@@ -353,6 +455,19 @@ function start() {
     console.log('AppFut Bot (Meta API) rodando na porta ' + PORT);
     console.log('Webhook: http://SEU_DOMINIO/webhook');
     console.log('Phone Number ID:', process.env.META_PHONE_NUMBER_ID || '(nao configurado)');
+    setInterval(_checarEvolution, 2 * 60 * 1000);
+  });
+
+  process.on('uncaughtException', function(err) {
+    console.error('[crash] uncaughtException:', err);
+    var timeout = setTimeout(function() { process.exit(1); }, 5000);
+    alertar('🔴 *AppFut Meta Bot — Erro crítico!*\n⏰ ' + agora() + '\n⚠️ ' + err.message + '\nO PM2 irá reiniciar automaticamente.')
+      .catch(function(){})
+      .finally(function() { clearTimeout(timeout); process.exit(1); });
+  });
+
+  process.on('unhandledRejection', function(reason) {
+    console.error('[crash] unhandledRejection:', reason);
   });
 
   console.log('AppFut Meta Bot pronto.');

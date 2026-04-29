@@ -6,7 +6,7 @@
  * enviarCriarPartida → botoes para criar hoje / amanha / sintaxe
  */
 
-var { sendList, sendButtons } = require('../whatsapp/metaClient');
+var { sendList, sendButtons, sendText } = require('../whatsapp/metaClient');
 var db = require('../../database/connection');
 var { montarListaCompleta } = require('../utils/listaHelper');
 var { getGrupoAtivoId } = require('./admin');
@@ -36,9 +36,10 @@ function dataParaDDMM(d) {
 
 // ─── Menu Jogador ────────────────────────────────────────────────────────────
 
-async function enviarMenuJogador(client, sender, senderName) {
-  var nome  = senderName || 'Jogador';
-  var corpo = 'Nenhuma partida aberta no momento.';
+async function enviarMenuJogador(client, sender, senderName, mostrarRetry) {
+  var nome     = senderName || 'Jogador';
+  var corpo    = null;
+  var temPartida = false;
 
   try {
     var grupoHint = getGrupoAtivoId(sender);
@@ -46,19 +47,17 @@ async function enviarMenuJogador(client, sender, senderName) {
     var grupoFiltro = grupoHint ? 'AND p.grupo_id = ?' : '';
 
     var [rows] = await db.execute(
-      `SELECT p.id, p.data_partida, p.max_jogadores,
-              g.id AS grupo_id, g.nome AS grupo_nome, g.horario_inicio, g.horario_fim
-       FROM partidas p
-       JOIN grupos g          ON p.grupo_id  = g.id
-       JOIN grupo_jogadores gj ON gj.grupo_id = g.id
-       JOIN jogadores j        ON j.id        = gj.jogador_id
-       WHERE p.status = 'aberta'
-         AND gj.ativo = TRUE
-         AND j.whatsapp_id = ?
-         ${grupoFiltro}
-       ORDER BY p.data_partida ASC
-       LIMIT 1`,
-
+      'SELECT p.id, p.data_partida, p.max_jogadores,' +
+      '       g.id AS grupo_id, g.nome AS grupo_nome, g.horario_inicio, g.horario_fim' +
+      ' FROM partidas p' +
+      ' JOIN grupos g           ON p.grupo_id  = g.id' +
+      ' JOIN grupo_jogadores gj ON gj.grupo_id = g.id' +
+      ' JOIN jogadores j        ON j.id        = gj.jogador_id' +
+      ' WHERE p.status = \'aberta\'' +
+      '   AND gj.ativo = TRUE' +
+      '   AND j.whatsapp_id = ?' +
+      '   ' + grupoFiltro +
+      ' ORDER BY p.data_partida ASC LIMIT 1',
       queryArgs
     );
 
@@ -68,17 +67,33 @@ async function enviarMenuJogador(client, sender, senderName) {
         p.id, p.grupo_id, p.grupo_nome, p.data_partida,
         p.max_jogadores, p.horario_inicio, p.horario_fim, false
       );
+      temPartida = true;
     }
   } catch (e) {
     console.error('[menu] Erro ao buscar partida:', e.message);
+  }
+
+  if (!temPartida) {
+    if (mostrarRetry === false) {
+      return sendText(
+        sender,
+        'Fala, ' + nome + '! \u26bd\n\nNenhuma partida aberta no momento. Aguarde o adm criar!'
+      );
+    }
+    return sendButtons(
+      sender,
+      'Fala, ' + nome + '! \u26bd\n\nNenhuma partida aberta no momento. Aguarde o adm criar!',
+      [{ id: 'buscar_partida', title: '\u26bd Buscar partida' }]
+    );
   }
 
   return sendButtons(
     sender,
     'Fala, ' + nome + '! \u26bd\n\n' + corpo,
     [
-      { id: 'confirmar', title: '\u2705 Confirmar' },
-      { id: 'cancelar',  title: '\u274c Cancelar'  }
+      { id: 'confirmar', title: '\u2705 Confirmar'  },
+      { id: 'cancelar',  title: '\u274c Cancelar'   },
+      { id: 'avulso',    title: '\ud83d\udd38 Sou avulso' }
     ]
   );
 }
@@ -95,9 +110,11 @@ async function enviarMenuAdmin(client, sender) {
       {
         title: 'Partida',
         rows: [
-          { id: 'admin_status', title: '\ud83d\udcca Status',         description: 'Ver status da partida atual' },
-          { id: 'admin_fechar', title: '\ud83d\udd12 Fechar partida', description: 'Encerrar a partida aberta' },
-          { id: 'admin_criar_ajuda', title: '\u2795 Criar partida',   description: 'Criar nova partida rapidamente' }
+          { id: 'admin_status',     title: '\ud83d\udcca Status',         description: 'Ver status da partida atual' },
+          { id: 'admin_fechar',     title: '\ud83d\udd12 Fechar partida', description: 'Encerrar a partida aberta' },
+          { id: 'admin_criar_ajuda',title: '\u2795 Criar partida',        description: 'Criar nova partida rapidamente' },
+          { id: 'admin_link',       title: '\ud83d\udd17 Link convite',    description: 'Reenviar link de cadastro do grupo' },
+          { id: 'admin_sortear',    title: '\ud83c\udfb2 Sortear times',   description: 'Sortear dois times com confirmados' }
         ]
       },
       {
