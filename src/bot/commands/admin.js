@@ -44,6 +44,12 @@ async function processarComandoAdmin(client, message, sender, texto) {
     case 'status':
       await adminStatus(client, message, sender);
       break;
+    case 'link':
+      await adminLink(client, message, sender);
+      break;
+    case 'sortear':
+      await adminSortear(client, message, sender);
+      break;
     default:
       await delay();
       await client.sendText(message.from,
@@ -158,6 +164,10 @@ async function adminAjuda(client, message, sender) {
     '\u2022 *admin criar DD/MM HH:MM - HH:MM vagas*\n' +
     '\u2022 *admin fechar* \u2014 Fecha partida atual\n' +
     '\u2022 *admin status* \u2014 Vis\u00e3o geral\n\n' +
+    '\ud83d\udd17 *Convite:*\n' +
+    '\u2022 *admin link* \u2014 Reenviar link de cadastro\n\n' +
+    '\ud83c\udfb2 *Times:*\n' +
+    '\u2022 *admin sortear* \u2014 Sortear dois times\n\n' +
     '\ud83d\udca1 _Exemplo: admin criar 26/04 20:00 - 22:00 14_'
   );
 }
@@ -384,8 +394,13 @@ async function adminCriarPartida(client, message, sender, args) {
   if (args[2] && /^\d{1,2}:\d{2}$/.test(args[2])) {
     horarioInicio = args[2] + ':00';
     if (args[3] === '-' && args[4] && /^\d{1,2}:\d{2}$/.test(args[4])) {
+      // formato: 20:00 - 22:00 30
       horarioFim = args[4] + ':00';
       vagas = parseInt(args[5]) || grupo.max_jogadores;
+    } else if (args[3] && /^\d{1,2}:\d{2}$/.test(args[3])) {
+      // formato: 20:00 22:00 30 (sem traço)
+      horarioFim = args[3] + ':00';
+      vagas = parseInt(args[4]) || grupo.max_jogadores;
     } else {
       vagas = parseInt(args[3]) || grupo.max_jogadores;
     }
@@ -418,8 +433,10 @@ async function adminCriarPartida(client, message, sender, args) {
     weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric'
   });
 
-  var horarioTexto = horarioInicio
-    ? '\u23f0 ' + args[2] + (horarioFim ? ' - ' + args[4] : '') + '\n'
+  var inicioDisplay = horarioInicio ? horarioInicio.replace(/:00$/, '') : '';
+  var fimDisplay    = horarioFim    ? horarioFim.replace(/:00$/, '')    : '';
+  var horarioTexto  = inicioDisplay
+    ? '\u23f0 ' + inicioDisplay + (fimDisplay ? ' - ' + fimDisplay : '') + '\n'
     : '';
 
   await client.sendText(message.from,
@@ -524,10 +541,112 @@ async function verificarAdminGrupo(client, grupoId, senderId) {
   }
 }
 
+// ============================================================
+// admin sortear — sorteia dois times com confirmados + avulsos
+// ============================================================
+
+var DIAS_SORT = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
+
+async function adminSortear(client, message, sender) {
+  await delay();
+
+  var resultado = await buscarGrupoAtivo(sender);
+  if (resultado.multiplos) { await mostrarSelecaoGrupo(client, message, resultado.grupos, sender); return; }
+  if (!resultado.grupo) { await client.sendText(message.from, 'Você não é admin de nenhum grupo vinculado. ⚠️'); return; }
+  var grupo = resultado.grupo;
+
+  var [partidas] = await db.execute(
+    'SELECT id, data_partida FROM partidas WHERE grupo_id = ? AND status = "aberta" ORDER BY data_partida ASC LIMIT 1',
+    [grupo.id]
+  );
+  if (partidas.length === 0) {
+    await client.sendText(message.from, 'Não há partida aberta em *' + grupo.nome + '*. ⚠️');
+    return;
+  }
+  var partida = partidas[0];
+
+  var [confirmados] = await db.execute(
+    'SELECT j.nome FROM presencas pr JOIN jogadores j ON pr.jogador_id = j.id WHERE pr.partida_id = ?',
+    [partida.id]
+  );
+  var [avulsos] = await db.execute(
+    'SELECT nome FROM avulsos WHERE partida_id = ?',
+    [partida.id]
+  );
+
+  var jogadores = confirmados.map(function(j) { return j.nome; })
+    .concat(avulsos.map(function(a) { return a.nome; }));
+
+  if (jogadores.length < 2) {
+    await client.sendText(message.from,
+      'Poucos jogadores confirmados para sortear (' + jogadores.length + '). Aguarde mais confirmações. ⚠️'
+    );
+    return;
+  }
+
+  // Fisher-Yates shuffle
+  for (var i = jogadores.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = jogadores[i]; jogadores[i] = jogadores[j]; jogadores[j] = tmp;
+  }
+
+  var meio  = Math.ceil(jogadores.length / 2);
+  var timeA = jogadores.slice(0, meio);
+  var timeB = jogadores.slice(meio);
+
+  var d = new Date(partida.data_partida);
+  d = new Date(d.getTime() + d.getTimezoneOffset() * 60000);
+  var dataStr = DIAS_SORT[d.getDay()] + ', ' +
+    String(d.getDate()).padStart(2,'0') + '/' + String(d.getMonth()+1).padStart(2,'0');
+
+  var texto = '⚽ *Sorteio de times — ' + grupo.nome + '*\n' +
+    '📅 ' + dataStr + ' · ' + jogadores.length + ' jogadores\n\n' +
+    '🔵 *Time A (' + timeA.length + '):*\n';
+  timeA.forEach(function(n, i) { texto += (i+1) + '. ' + n + '\n'; });
+  texto += '\n🔴 *Time B (' + timeB.length + '):*\n';
+  timeB.forEach(function(n, i) { texto += (i+1) + '. ' + n + '\n'; });
+  texto += '\n🔄 _Para sortear novamente: *admin sortear*_';
+
+  await client.sendText(message.from, texto);
+}
+
+// ============================================================
+// admin link — reenvia link de convite do grupo
+// ============================================================
+
+async function adminLink(client, message, sender) {
+  await delay();
+
+  var resultado = await buscarGrupoAtivo(sender);
+  if (resultado.multiplos) { await mostrarSelecaoGrupo(client, message, resultado.grupos, sender); return; }
+  if (!resultado.grupo) { await client.sendText(message.from, 'Você não é admin de nenhum grupo vinculado. ⚠️'); return; }
+  var grupo = resultado.grupo;
+
+  var [rows] = await db.execute('SELECT invite_token FROM grupos WHERE id = ?', [grupo.id]);
+  if (rows.length === 0 || !rows[0].invite_token) {
+    await client.sendText(message.from, 'Link de convite não encontrado. Remova e adicione o bot ao grupo novamente.');
+    return;
+  }
+
+  var metaNumero = process.env.META_BOT_NUMBER || '5511995421741';
+  var link = 'https://wa.me/' + metaNumero + '?text=entrar%20' + rows[0].invite_token;
+
+  await client.sendText(message.from,
+    '🔗 *Link de convite — ' + grupo.nome + '*\n\n' +
+    link + '\n\n' +
+    '_Compartilhe este link com os membros do grupo._\n' +
+    '_Cada membro clica uma única vez para se cadastrar._'
+  );
+}
+
 function getGrupoAtivoId(sender) {
   var sessao = adminSessoes[sender];
   if (sessao && (Date.now() - sessao.at) < SESSAO_TTL) return sessao.grupoId;
   return null;
 }
 
-module.exports = { processarComandoAdmin, verificarAdminGrupo, getGrupoAtivoId };
+function setGrupoAtivo(sender, grupoId, grupoNome) {
+  adminSessoes[sender] = { grupoId: grupoId, grupoNome: grupoNome || '', at: Date.now() };
+}
+
+module.exports = { processarComandoAdmin, verificarAdminGrupo, getGrupoAtivoId, setGrupoAtivo };

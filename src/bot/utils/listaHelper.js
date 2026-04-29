@@ -96,8 +96,9 @@ async function montarListaCompleta(partidaId, grupoId, grupoNome, dataPartida, m
     var botPhone = process.env.META_BOT_NUMBER || '5511995421741';
     texto += '\n\ud83d\udcf2 *Clique no WhatsApp:* https://wa.me/' + botPhone;
   } else {
-    texto += '\n\ud83d\udccc _avulso Nome \u2014 adicionar avulso_\n';
-    texto += '_remover avulso Nome \u2014 remover avulso_';
+    texto += '\n\ud83d\udccc _Para adicionar um avulso:_\n';
+    texto += '_Adicionar avulso \u2014 avulso Nome_\n';
+    texto += '_Remover avulso \u2014 remover avulso Nome_';
   }
 
   return texto;

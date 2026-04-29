@@ -38,6 +38,7 @@ async function cancelar(client, message, sender) {
   // Limpa estados anteriores
   await db.execute('DELETE FROM presencas WHERE partida_id = ? AND jogador_id = ?', [p.id, jogadorId]);
   await db.execute('DELETE FROM duvidas WHERE partida_id = ? AND jogador_id = ?', [p.id, jogadorId]);
+  await db.execute('DELETE FROM avulsos WHERE partida_id = ? AND jogador_id = ?', [p.id, jogadorId]);
 
   // Registra como ausente explicito
   await db.execute(
