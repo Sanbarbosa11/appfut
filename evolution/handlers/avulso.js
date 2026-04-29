@@ -8,6 +8,11 @@ var createClient                  = require('../client/evolutionClient');
 
 var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
 
+// Problema 8: limita tamanho e remove caracteres de controle
+function sanitizarNome(input) {
+  return (input || '').trim().replace(/[\r\n\t]/g, ' ').slice(0, 50);
+}
+
 async function buscarPartidaAberta(jogadorId, grupoHint) {
   var q = 'SELECT p.id, p.data_partida, p.max_jogadores, g.id as grupo_id, ' +
     'g.nome as grupo_nome, g.horario_inicio, g.horario_fim ' +
@@ -22,7 +27,10 @@ async function buscarPartidaAberta(jogadorId, grupoHint) {
 }
 
 async function adicionarAvulso(remoteJid, nome) {
-  var limite = verificarRateLimit(remoteJid, 'avulso_' + nome);
+  nome = sanitizarNome(nome);
+  if (!nome) return;
+
+  var limite = await verificarRateLimit(remoteJid, 'avulso_' + nome);
   if (!limite.permitido) return;
   await delay();
 
@@ -35,13 +43,13 @@ async function adicionarAvulso(remoteJid, nome) {
   }
   var jogadorId = jogador[0].id;
 
-  var p = await buscarPartidaAberta(jogadorId, getGrupoAtivoId(remoteJid));
+  var p = await buscarPartidaAberta(jogadorId, await getGrupoAtivoId(remoteJid));
   if (!p) {
     await client.message.sendText(instanceName, remoteJid, 'Não há jogo aberto no momento. ⚠️');
     return;
   }
 
-  // Verifica se o nome é o próprio membro (self-add)
+  // Verifica se o nome e o proprio membro (self-add)
   var [jogadorExistente] = await db.execute(
     'SELECT id FROM jogadores WHERE LOWER(nome) = LOWER(?)', [nome]
   );
@@ -78,7 +86,10 @@ async function adicionarAvulso(remoteJid, nome) {
 }
 
 async function removerAvulso(remoteJid, nome) {
-  var limite = verificarRateLimit(remoteJid, 'remover_avulso_' + nome);
+  nome = sanitizarNome(nome);
+  if (!nome) return;
+
+  var limite = await verificarRateLimit(remoteJid, 'remover_avulso_' + nome);
   if (!limite.permitido) return;
   await delay();
 
@@ -90,7 +101,7 @@ async function removerAvulso(remoteJid, nome) {
     return;
   }
 
-  var p = await buscarPartidaAberta(jogador[0].id, getGrupoAtivoId(remoteJid));
+  var p = await buscarPartidaAberta(jogador[0].id, await getGrupoAtivoId(remoteJid));
   if (!p) {
     await client.message.sendText(instanceName, remoteJid, 'Não há jogo aberto no momento. ⚠️');
     return;

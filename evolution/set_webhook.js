@@ -24,7 +24,8 @@ if (!instanceName) {
   process.exit(1);
 }
 
-var url = process.env.WEBHOOK_URL || 'http://127.0.0.1:3002/evolution';
+var url           = process.env.WEBHOOK_URL    || 'http://127.0.0.1:3002/evolution';
+var webhookSecret = process.env.WEBHOOK_SECRET || '';
 var events = (process.env.WEBHOOK_EVENTS || 'MESSAGES_UPSERT,CONNECTION_UPDATE')
   .split(',')
   .map(function(s) { return s.trim(); })
@@ -52,13 +53,17 @@ var events = (process.env.WEBHOOK_EVENTS || 'MESSAGES_UPSERT,CONNECTION_UPDATE')
 
   // 2. Registra webhook
   try {
-    var r = await client.webhook.set(instanceName, {
-      enabled: true,
-      url: url,
-      webhook_by_events: false,  // /evolution unico - mais simples
-      base64: false,
-      events: events
-    });
+    var cfg = {
+      enabled:           true,
+      url:               url,
+      webhook_by_events: false,
+      base64:            false,
+      events:            events
+    };
+    // Problema 1: Evolution envia este header em cada POST para o nosso servidor
+    if (webhookSecret) cfg.headers = { apikey: webhookSecret };
+
+    var r = await client.webhook.set(instanceName, cfg);
     console.log('Webhook registrado:');
     console.log(JSON.stringify(r, null, 2));
   } catch(e) {

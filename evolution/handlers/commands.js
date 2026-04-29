@@ -13,6 +13,11 @@ var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
 
 var DIAS = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
 
+// Problema 8: limita tamanho e remove caracteres de controle
+function sanitizarNome(input) {
+  return (input || '').trim().replace(/[\r\n\t]/g, ' ').slice(0, 50);
+}
+
 function formatarData(dataPartida) {
   var d = new Date(dataPartida);
   d = new Date(d.getTime() + d.getTimezoneOffset() * 60000);
@@ -71,7 +76,7 @@ async function processarComandoGrupo(remoteJid, text, participant, pushName) {
 
   if (cmd === '!lista') {
     if (isDuplicado(remoteJid, 'lista')) return;
-    var limite = verificarRateLimit(remoteJid, 'lista');
+    var limite = await verificarRateLimit(remoteJid, 'lista');
     if (!limite.permitido) {
       await delay();
       await client.message.sendText(instanceName, remoteJid,
@@ -101,7 +106,7 @@ async function processarComandoGrupo(remoteJid, text, participant, pushName) {
 }
 
 // ============================================================
-// Menu contextual no privado (substitui botoes interativos)
+// Menu contextual no privado
 // ============================================================
 
 async function enviarMenuJogador(remoteJid, senderName) {
@@ -112,7 +117,7 @@ async function enviarMenuJogador(remoteJid, senderName) {
   try {
     var [jogador] = await db.execute('SELECT id FROM jogadores WHERE whatsapp_id = ?', [remoteJid]);
     if (jogador.length > 0) {
-      var grupoHint = getGrupoAtivoId(remoteJid);
+      var grupoHint = await getGrupoAtivoId(remoteJid);
       var q = 'SELECT p.id, p.data_partida, p.max_jogadores, g.id as grupo_id, ' +
         'g.nome as grupo_nome, g.horario_inicio, g.horario_fim ' +
         'FROM partidas p JOIN grupos g ON p.grupo_id = g.id ' +
@@ -160,11 +165,10 @@ async function processarMensagemPrivada(remoteJid, text, senderName) {
     atualizarNomeSePendente(remoteJid, senderName).catch(function() {});
   }
 
-  // Vínculo ao grupo via link de boas-vindas
+  // Problema 5: entrar agora aceita token hex (nao mais parseInt)
   if (cmd.startsWith('entrar ')) {
-    var grupoId = parseInt(cmd.split(' ')[1]);
-    if (grupoId) {
-      // entrar é tratado pelo Meta bot (index_meta.js) — aqui só informa
+    var entrarToken = cmd.split(' ').slice(1).join(' ').trim();
+    if (entrarToken) {
       await delay();
       await client.message.sendText(instanceName, remoteJid,
         '📲 Para se cadastrar no grupo, use o link recebido na mensagem de boas-vindas.\n' +
@@ -199,14 +203,20 @@ async function processarMensagemPrivada(remoteJid, text, senderName) {
     return listaPrivada(remoteJid);
   }
 
-  // Avulso
+  // Avulso — Problema 8: sanitizarNome antes de repassar
   if (cmd.startsWith('avulso ')) {
-    var nomeAvulso = (text || '').trim().slice(7).trim();
-    if (nomeAvulso) return adicionarAvulso(remoteJid, nomeAvulso);
+    var nomeAvulso = sanitizarNome((text || '').trim().slice(7));
+    if (!nomeAvulso) {
+      await delay();
+      await client.message.sendText(instanceName, remoteJid, 'Informe um nome. Ex: *avulso João Silva*');
+      return;
+    }
+    return adicionarAvulso(remoteJid, nomeAvulso);
   }
   if (cmd.startsWith('remover avulso ')) {
-    var nomeRemover = (text || '').trim().slice(15).trim();
+    var nomeRemover = sanitizarNome((text || '').trim().slice(15));
     if (nomeRemover) return removerAvulso(remoteJid, nomeRemover);
+    return;
   }
 
   // Ajuda explícita
@@ -235,7 +245,7 @@ async function processarMensagemPrivada(remoteJid, text, senderName) {
 // ============================================================
 
 async function listaPrivada(remoteJid) {
-  var limite = verificarRateLimit(remoteJid, 'lista-priv');
+  var limite = await verificarRateLimit(remoteJid, 'lista-priv');
   if (!limite.permitido) return;
   await delay();
 
@@ -246,7 +256,7 @@ async function listaPrivada(remoteJid) {
     return;
   }
 
-  var grupoHint = getGrupoAtivoId(remoteJid);
+  var grupoHint = await getGrupoAtivoId(remoteJid);
   var q =
     'SELECT p.id, p.data_partida, p.max_jogadores, g.id as grupo_id, g.nome as grupo_nome, g.horario_inicio, g.horario_fim ' +
     'FROM partidas p JOIN grupos g ON p.grupo_id = g.id JOIN grupo_jogadores gj ON gj.grupo_id = g.id ' +
@@ -274,7 +284,7 @@ async function listaPrivada(remoteJid) {
 // ============================================================
 
 async function registrarDuvida(remoteJid, senderName) {
-  var limite = verificarRateLimit(remoteJid, 'duvida');
+  var limite = await verificarRateLimit(remoteJid, 'duvida');
   if (!limite.permitido) return;
   await delay();
 
@@ -286,7 +296,7 @@ async function registrarDuvida(remoteJid, senderName) {
   if (jogador.length === 0) return;
   var jogadorId = jogador[0].id;
 
-  var grupoHint = getGrupoAtivoId(remoteJid);
+  var grupoHint = await getGrupoAtivoId(remoteJid);
   var q =
     'SELECT p.id, g.nome as grupo_nome FROM partidas p ' +
     'JOIN grupos g ON p.grupo_id = g.id ' +

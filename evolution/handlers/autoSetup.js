@@ -1,14 +1,50 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.evolution') });
 
-var db           = require('../database/connection');
-var { delay }    = require('../utils/rateLimit');
+var crypto      = require('crypto');
+var db          = require('../database/connection');
+
+function slugify(nome) {
+  return (nome || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // remove acentos
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')  // remove especiais
+    .trim()
+    .replace(/\s+/g, '-')         // espacos → hifens
+    .slice(0, 40);
+}
+var { delay }   = require('../utils/rateLimit');
 var createClient = require('../client/evolutionClient');
 
 var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
 var metaNumber   = process.env.META_BOT_NUMBER     || '5511995421741';
+// Problema 11: JID do proprio bot para detectar quando e removido do grupo
+var BOT_JID      = process.env.BOT_JID             || '';
 
 function nomeDoJid(jid) {
   return (jid || '').replace(/@.*$/, '');
+}
+
+// Garante que o grupo tenha invite_token e retorna o token atual.
+// Token = slug do nome do grupo (ex: "rachao-da-rua").
+// Se o slug ja estiver em uso por outro grupo, adiciona sufixo de 4 chars.
+// Fallback para hex aleatorio se o nome nao gerar slug valido.
+async function garantirInviteToken(grupoId, groupName) {
+  var [rows] = await db.execute('SELECT invite_token FROM grupos WHERE id = ?', [grupoId]);
+  if (rows.length > 0 && rows[0].invite_token) return rows[0].invite_token;
+
+  var base  = slugify(groupName) || crypto.randomBytes(4).toString('hex');
+  var token = base;
+
+  // Garante unicidade
+  var [dup] = await db.execute(
+    'SELECT id FROM grupos WHERE invite_token = ? AND id != ?', [token, grupoId]
+  );
+  if (dup.length > 0) {
+    token = base + '-' + crypto.randomBytes(2).toString('hex');
+  }
+
+  await db.execute('UPDATE grupos SET invite_token = ? WHERE id = ?', [token, grupoId]);
+  return token;
 }
 
 async function registrarGrupo(groupId, groupName, participants) {
@@ -62,7 +98,9 @@ async function handleGroupsUpsert(data) {
       if (rows.length === 0 || rows[0].boas_vindas_at !== null) continue;
 
       var groupName = g.subject || g.id;
-      var link      = 'https://wa.me/' + metaNumber + '?text=entrar%20' + grupoId;
+      // Problema 5: token baseado no nome do grupo (legivel) — nao ID sequencial
+      var token     = await garantirInviteToken(grupoId, groupName);
+      var link      = 'https://wa.me/' + metaNumber + '?text=entrar%20' + token;
 
       var client = createClient();
       await delay();
@@ -96,6 +134,19 @@ async function handleGroupParticipantsUpdate(data) {
     return;
   }
   var grupoId = grupos[0].id;
+
+  // Problema 11: detectar se o proprio bot foi removido do grupo
+  if (action === 'remove' && BOT_JID) {
+    var botBase    = BOT_JID.split('@')[0];
+    var botRemovido = participants.some(function(jid) {
+      return String(jid) === BOT_JID || String(jid).startsWith(botBase);
+    });
+    if (botRemovido) {
+      await db.execute('UPDATE grupos SET ativo = FALSE WHERE whatsapp_id = ?', [groupId]);
+      console.log('[autoSetup] Bot removido do grupo, desativado:', groupId);
+      return;
+    }
+  }
 
   for (var jid of participants) {
     try {

@@ -1,23 +1,38 @@
-var limites = {};
-var dedup   = {};
+var db = require('../database/connection');
 
-function verificarRateLimit(chaveBase, acao) {
+// dedup permanece em memoria (janela de 10s — perda num restart e aceitavel)
+var dedup = {};
+
+// Rate limit persistido no MySQL para sobreviver restarts.
+// Falha silenciosamente (permite a acao) se o banco estiver indisponivel.
+async function verificarRateLimit(chaveBase, acao, max, janelaMs) {
   var chave  = chaveBase + ':' + acao;
   var agora  = Date.now();
-  var janela = 3600000;
-  var max    = 3;
+  max      = max      || 3;
+  janelaMs = janelaMs || 3600000;
 
-  if (!limites[chave]) limites[chave] = [];
-  limites[chave] = limites[chave].filter(function(t) { return agora - t < janela; });
+  try {
+    var [rows] = await db.execute('SELECT chamadas FROM rate_limits WHERE chave = ?', [chave]);
+    var chamadas = rows.length > 0
+      ? (Array.isArray(rows[0].chamadas) ? rows[0].chamadas : JSON.parse(rows[0].chamadas))
+      : [];
+    chamadas = chamadas.filter(function(t) { return agora - t < janelaMs; });
 
-  if (limites[chave].length >= max) {
-    var mais_antigo = limites[chave][0];
-    var minutosRestantes = Math.ceil((mais_antigo + janela - agora) / 60000);
-    return { permitido: false, minutosRestantes: minutosRestantes, restante: 0 };
+    if (chamadas.length >= max) {
+      var minutosRestantes = Math.ceil((chamadas[0] + janelaMs - agora) / 60000);
+      return { permitido: false, minutosRestantes: minutosRestantes, restante: 0 };
+    }
+
+    chamadas.push(agora);
+    await db.execute(
+      'INSERT INTO rate_limits (chave, chamadas) VALUES (?, ?) ON DUPLICATE KEY UPDATE chamadas = VALUES(chamadas)',
+      [chave, JSON.stringify(chamadas)]
+    );
+    return { permitido: true, restante: max - chamadas.length };
+  } catch(e) {
+    console.error('[rateLimit] Erro DB, permitindo por seguranca:', e.message);
+    return { permitido: true, restante: max };
   }
-
-  limites[chave].push(agora);
-  return { permitido: true, restante: max - limites[chave].length };
 }
 
 function isDuplicado(chaveBase, acao) {

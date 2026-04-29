@@ -1,13 +1,66 @@
 require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.evolution') });
 
-var db          = require('../database/connection');
-var { delay }   = require('../utils/rateLimit');
+var db           = require('../database/connection');
+var { delay }    = require('../utils/rateLimit');
 var createClient = require('../client/evolutionClient');
 
 var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
-var adminSessoes = {}; // { remoteJid: { grupoId, grupoNome, at } }
-var SESSAO_TTL   = 4 * 60 * 60 * 1000;
-var _ultimaLista = {}; // { remoteJid: { lista, grupoId } }
+var SESSAO_TTL_H = 4; // horas
+
+// ---------- helpers de sessao (MySQL) ----------
+
+async function getSessao(remoteJid) {
+  try {
+    var [rows] = await db.execute(
+      'SELECT grupo_id, grupo_nome, ultima_lista FROM admin_sessoes ' +
+      'WHERE whatsapp_id = ? AND atualizado_em > DATE_SUB(NOW(), INTERVAL ? HOUR)',
+      [remoteJid, SESSAO_TTL_H]
+    );
+    return rows.length > 0 ? rows[0] : null;
+  } catch(e) {
+    console.error('[admin] getSessao erro:', e.message);
+    return null;
+  }
+}
+
+async function setSessao(remoteJid, grupoId, grupoNome) {
+  try {
+    await db.execute(
+      'INSERT INTO admin_sessoes (whatsapp_id, grupo_id, grupo_nome) VALUES (?, ?, ?) ' +
+      'ON DUPLICATE KEY UPDATE grupo_id = VALUES(grupo_id), grupo_nome = VALUES(grupo_nome), atualizado_em = NOW()',
+      [remoteJid, grupoId, grupoNome]
+    );
+  } catch(e) {
+    console.error('[admin] setSessao erro:', e.message);
+  }
+}
+
+async function setUltimaLista(remoteJid, lista, grupoId) {
+  try {
+    await db.execute(
+      'UPDATE admin_sessoes SET ultima_lista = ? WHERE whatsapp_id = ?',
+      [JSON.stringify({ lista: lista, grupoId: grupoId }), remoteJid]
+    );
+  } catch(e) {
+    console.error('[admin] setUltimaLista erro:', e.message);
+  }
+}
+
+async function getUltimaLista(remoteJid) {
+  try {
+    var [rows] = await db.execute(
+      'SELECT ultima_lista FROM admin_sessoes WHERE whatsapp_id = ?', [remoteJid]
+    );
+    if (rows.length === 0 || !rows[0].ultima_lista) return null;
+    var raw = rows[0].ultima_lista;
+    return typeof raw === 'string' ? JSON.parse(raw) : raw;
+  } catch(e) {
+    console.error('[admin] getUltimaLista erro:', e.message);
+    return null;
+  }
+}
+
+// ---------- logica de negocio ----------
 
 async function processarComandoAdmin(remoteJid, texto) {
   var args    = (texto || '').substring(6).trim().split(/\s+/);
@@ -33,11 +86,12 @@ async function processarComandoAdmin(remoteJid, texto) {
 }
 
 async function buscarGrupoAtivo(sender) {
-  var sessao = adminSessoes[sender];
-  if (sessao && (Date.now() - sessao.at) < SESSAO_TTL) {
-    var [rows] = await db.execute('SELECT * FROM grupos WHERE id = ?', [sessao.grupoId]);
+  var sessao = await getSessao(sender);
+  if (sessao) {
+    var [rows] = await db.execute('SELECT * FROM grupos WHERE id = ?', [sessao.grupo_id]);
     if (rows.length > 0) return { grupo: rows[0], multiplos: false, grupos: null };
-    delete adminSessoes[sender];
+    // sessao aponta para grupo que nao existe mais — limpar
+    await db.execute('DELETE FROM admin_sessoes WHERE whatsapp_id = ?', [sender]);
   }
   var [grupos] = await db.execute(
     'SELECT g.* FROM grupos g JOIN admins a ON g.id = a.grupo_id WHERE a.whatsapp_id = ? ORDER BY g.nome ASC',
@@ -45,23 +99,22 @@ async function buscarGrupoAtivo(sender) {
   );
   if (grupos.length === 0) return { grupo: null, multiplos: false, grupos: null };
   if (grupos.length === 1) {
-    adminSessoes[sender] = { grupoId: grupos[0].id, grupoNome: grupos[0].nome, at: Date.now() };
+    await setSessao(sender, grupos[0].id, grupos[0].nome);
     return { grupo: grupos[0], multiplos: false, grupos: null };
   }
   return { grupo: null, multiplos: true, grupos: grupos };
 }
 
-function getGrupoAtivoId(sender) {
-  var sessao = adminSessoes[sender];
-  if (sessao && (Date.now() - sessao.at) < SESSAO_TTL) return sessao.grupoId;
-  return null;
+async function getGrupoAtivoId(sender) {
+  var sessao = await getSessao(sender);
+  return sessao ? sessao.grupo_id : null;
 }
 
 async function mostrarSelecaoGrupo(client, remoteJid, grupos) {
-  var sessao = adminSessoes[remoteJid];
+  var sessao = await getSessao(remoteJid);
   var texto  = '📌 *Você gerencia ' + grupos.length + ' grupos. Selecione um:*\n\n';
   for (var i = 0; i < grupos.length; i++) {
-    var marcador = sessao && sessao.grupoId === grupos[i].id ? ' ← *ativo*' : '';
+    var marcador = sessao && sessao.grupo_id === grupos[i].id ? ' ← *ativo*' : '';
     texto += 'ID *' + grupos[i].id + '* — ' + grupos[i].nome + marcador + '\n';
   }
   texto += '\nDigite: *admin grupo ativar ID*\n_Seleção fica ativa por 4 horas._';
@@ -70,8 +123,8 @@ async function mostrarSelecaoGrupo(client, remoteJid, grupos) {
 
 async function adminAjuda(client, remoteJid) {
   await delay();
-  var sessao     = adminSessoes[remoteJid];
-  var grupoAtivo = sessao ? '\n📌 *Grupo ativo:* ' + sessao.grupoNome + '\n' : '';
+  var sessao     = await getSessao(remoteJid);
+  var grupoAtivo = sessao ? '\n📌 *Grupo ativo:* ' + sessao.grupo_nome + '\n' : '';
   await client.message.sendText(instanceName, remoteJid,
     '🔧 *Comandos Admin*\n' + grupoAtivo + '\n' +
     '📋 *Gestão de grupo:*\n' +
@@ -99,10 +152,10 @@ async function adminGrupos(client, remoteJid) {
     await client.message.sendText(instanceName, remoteJid, 'Você não é admin de nenhum grupo vinculado. ⚠️');
     return;
   }
-  var sessao = adminSessoes[remoteJid];
+  var sessao = await getSessao(remoteJid);
   var texto  = '📋 *Seus grupos (' + grupos.length + '):*\n\n';
   for (var i = 0; i < grupos.length; i++) {
-    var marcador = sessao && sessao.grupoId === grupos[i].id ? ' ← *ativo*' : '';
+    var marcador = sessao && sessao.grupo_id === grupos[i].id ? ' ← *ativo*' : '';
     texto += 'ID *' + grupos[i].id + '* — ' + grupos[i].nome + marcador + '\n';
   }
   if (grupos.length > 1) texto += '\nPara ativar: *admin grupo ativar ID*';
@@ -132,7 +185,7 @@ async function adminGrupoAtivar(client, remoteJid, args) {
     );
     return;
   }
-  adminSessoes[remoteJid] = { grupoId: rows[0].id, grupoNome: rows[0].nome, at: Date.now() };
+  await setSessao(remoteJid, rows[0].id, rows[0].nome);
   await client.message.sendText(instanceName, remoteJid,
     '✅ *Grupo ativado: ' + rows[0].nome + '*\n\nTodos os comandos admin operarão neste grupo pelos próximos 4 horas.'
   );
@@ -158,7 +211,8 @@ async function adminParticipantes(client, remoteJid) {
     texto += (i + 1) + '. ' + jogadores[i].nome + ' ' + (jogadores[i].ativo ? '✅' : '❌') + '\n';
   }
   texto += '\n💡 *admin ativar N* ou *admin desativar N*';
-  _ultimaLista[remoteJid] = { lista: jogadores, grupoId: grupo.id };
+  // Persiste lista no MySQL para que "admin ativar N" funcione apos restart
+  await setUltimaLista(remoteJid, jogadores, grupo.id);
   await client.message.sendText(instanceName, remoteJid, texto);
 }
 
@@ -169,7 +223,7 @@ async function adminToggleJogador(client, remoteJid, args, ativo) {
   if (!resultado.grupo)    { await client.message.sendText(instanceName, remoteJid, 'Você não é admin de nenhum grupo vinculado. ⚠️'); return; }
 
   var numero = parseInt(args[1]);
-  var cache  = _ultimaLista[remoteJid];
+  var cache  = await getUltimaLista(remoteJid);
   if (!cache || !numero || numero < 1 || numero > cache.lista.length) {
     await client.message.sendText(instanceName, remoteJid, 'Número inválido. Digite *admin participantes* primeiro.');
     return;
@@ -215,8 +269,13 @@ async function adminCriarPartida(client, remoteJid, args) {
   if (args[2] && /^\d{1,2}:\d{2}$/.test(args[2])) {
     horarioInicio = args[2] + ':00';
     if (args[3] === '-' && args[4] && /^\d{1,2}:\d{2}$/.test(args[4])) {
+      // formato: 19:15 - 21:15 30
       horarioFim = args[4] + ':00';
       vagas = parseInt(args[5]) || grupo.max_jogadores;
+    } else if (args[3] && /^\d{1,2}:\d{2}$/.test(args[3])) {
+      // formato sem traço: 19:15 21:15 30
+      horarioFim = args[3] + ':00';
+      vagas = parseInt(args[4]) || grupo.max_jogadores;
     } else {
       vagas = parseInt(args[3]) || grupo.max_jogadores;
     }

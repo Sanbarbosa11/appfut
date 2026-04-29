@@ -20,19 +20,26 @@
 
 require('dotenv').config({ path: '.env.evolution' });
 
-var fs = require('fs');
-var path = require('path');
-var express = require('express');
-var autoSetup = require('./handlers/autoSetup');
-var commands  = require('./handlers/commands');
+var fs         = require('fs');
+var path       = require('path');
+var express    = require('express');
+var rateLimit  = require('express-rate-limit');
+var autoSetup  = require('./handlers/autoSetup');
+var commands   = require('./handlers/commands');
 var { iniciarScheduler } = require('./scheduler');
+var { alertar, agora }   = require('./utils/alertar');
 
-var PORT       = Number(process.env.WEBHOOK_PORT || 3002);
-var DUMP_FILE  = process.env.WEBHOOK_DUMP_FILE || ''; // vazio = nao grava
-var MAX_BODY   = process.env.WEBHOOK_BODY_LIMIT || '5mb';
+var PORT           = Number(process.env.WEBHOOK_PORT || 3002);
+var DUMP_FILE      = process.env.WEBHOOK_DUMP_FILE || ''; // vazio = nao grava
+var MAX_BODY       = process.env.WEBHOOK_BODY_LIMIT || '5mb';
+var WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 
 // Contador simples para ver volume em memoria
 var stats = { total: 0, porEvento: {}, porInstancia: {}, inicio: Date.now() };
+
+// Cooldown para alertas de conexão (evita spam em reconexões seguidas)
+var ultimoAlertaConexao = 0;
+var COOLDOWN_CONEXAO = 5 * 60 * 1000; // 5 minutos
 
 function ts() {
   return new Date().toISOString();
@@ -94,6 +101,27 @@ function appendDump(obj) {
 var app = express();
 app.use(express.json({ limit: MAX_BODY }));
 
+// Problema 6: rate limit HTTP — 300 req/min por IP antes de qualquer handler
+var limiterWebhook = rateLimit({
+  windowMs:       60 * 1000,
+  max:            300,
+  standardHeaders: true,
+  legacyHeaders:  false,
+  message:        { error: 'muitas requisicoes' }
+});
+app.use('/evolution', limiterWebhook);
+
+// Problema 1: verificar header apikey enviado pelo Evolution API
+function verificarAssinatura(req, res, next) {
+  if (!WEBHOOK_SECRET) return next(); // sem secret configurado = modo dev
+  var chave = req.headers['apikey'] || req.headers['x-api-key'] || '';
+  if (chave !== WEBHOOK_SECRET) {
+    console.warn('[webhook] Requisicao rejeitada — apikey invalida de:', req.ip);
+    return res.status(401).json({ error: 'nao autorizado' });
+  }
+  next();
+}
+
 // Healthcheck pro proprio webhook
 app.get('/health', function(req, res) {
   var upSec  = Math.floor((Date.now() - stats.inicio) / 1000);
@@ -154,6 +182,21 @@ function handle(req, res) {
     body: body
   });
 
+  // Alertas de conectividade
+  if (event === 'CONNECTION_UPDATE' || event === 'connection.update') {
+    var state        = (body.data || {}).state;
+    var statusReason = (body.data || {}).statusReason;
+    var agora_ms     = Date.now();
+    if ((state === 'close' || state === 'conflict') && (agora_ms - ultimoAlertaConexao) > COOLDOWN_CONEXAO) {
+      ultimoAlertaConexao = agora_ms;
+      alertar('🔴 *Evolution — Sessão WhatsApp encerrada!*\n⏰ ' + agora() + '\nCódigo: ' + (statusReason || 'desconhecido') + '\nTentando reconectar automaticamente...').catch(function(){});
+    }
+  }
+
+  if (event === 'QRCODE_UPDATED' || event === 'qrcode.updated') {
+    alertar('📱 *Evolution — QR Code necessário!*\n⏰ ' + agora() + '\n⚠️ A sessão expirou e precisa ser reautenticada.\nAcesse o servidor e escaneie o QR:\n*pm2 logs evolution-webhook*').catch(function(){});
+  }
+
   // Rotear para handlers de negocio (nao bloqueia resposta)
   if (event === 'GROUPS_UPSERT' || event === 'groups.upsert') {
     autoSetup.handleGroupsUpsert(body.data).catch(function(e) {
@@ -190,8 +233,43 @@ function handle(req, res) {
   res.status(200).json({ received: true });
 }
 
-app.post('/evolution', handle);
-app.post('/evolution/*', handle);
+app.post('/evolution',   verificarAssinatura, handle);
+app.post('/evolution/*', verificarAssinatura, handle);
+
+// Endpoint interno — usado pelo Meta bot (mesmo servidor) para enviar alertas
+// Seguro: servidor escuta apenas 127.0.0.1, nao e acessivel externamente
+app.post('/internal/alert', function(req, res) {
+  var msg = (req.body || {}).message || '';
+  if (!msg) return res.status(400).json({ error: 'message obrigatoria' });
+  alertar(msg).catch(function(){});
+  res.json({ ok: true });
+});
+
+// ── Monitor de saude do Meta bot ─────────────────────────────────────────────
+var META_HEALTH_URL = process.env.META_HEALTH_URL || 'http://127.0.0.1:3000/health';
+var _metaFalhas = 0;
+var _metaEstado = null; // null | 'ok' | 'falhou'
+
+async function _checarMeta() {
+  try {
+    var ctrl = new AbortController();
+    var tid  = setTimeout(function() { ctrl.abort(); }, 5000);
+    var res  = await fetch(META_HEALTH_URL, { signal: ctrl.signal });
+    clearTimeout(tid);
+    if (!res.ok) throw new Error('status ' + res.status);
+    if (_metaEstado === 'falhou') {
+      alertar('🟢 *AppFut Meta Bot voltou!*\n⏰ ' + agora() + '\n✅ Ambiente Meta normalizado.').catch(function(){});
+    }
+    _metaFalhas = 0;
+    _metaEstado = 'ok';
+  } catch(e) {
+    _metaFalhas++;
+    if (_metaFalhas >= 2 && _metaEstado !== 'falhou') {
+      _metaEstado = 'falhou';
+      alertar('🔴 *AppFut Meta Bot — Fora do ar!*\n⏰ ' + agora() + '\n⚠️ Health check falhou 2x consecutivas.\n💡 pm2 logs appfut-meta').catch(function(){});
+    }
+  }
+}
 
 // Qualquer outra rota -> 404 verboso pra ajudar a debugar config
 app.use(function(req, res) {
@@ -199,14 +277,33 @@ app.use(function(req, res) {
   res.status(404).json({ error: 'rota nao reconhecida', hint: 'use POST /evolution' });
 });
 
-app.listen(PORT, '0.0.0.0', function() {
+// Problema 4: bind apenas em localhost — Evolution API esta no mesmo servidor
+app.listen(PORT, '127.0.0.1', function() {
   console.log('=== AppFut Evolution Webhook ===');
-  console.log('Ouvindo em http://0.0.0.0:' + PORT);
+  console.log('Ouvindo em http://127.0.0.1:' + PORT);
   console.log('Rota principal: POST /evolution');
   console.log('Healthcheck   : GET  /health');
   console.log('Dump JSONL    : ' + (DUMP_FILE || '(desligado)'));
   console.log('Eventos aguardando...');
   iniciarScheduler();
+  // Startup: aguarda 12s para Meta inicializar, envia status combinado + inicia monitor
+  setTimeout(async function() {
+    var metaOk = false;
+    try {
+      var ctrl = new AbortController();
+      var tid  = setTimeout(function() { ctrl.abort(); }, 5000);
+      var res  = await fetch(META_HEALTH_URL, { signal: ctrl.signal });
+      clearTimeout(tid);
+      metaOk = res.ok;
+    } catch(e) { metaOk = false; }
+    _metaEstado = metaOk ? 'ok' : null;
+    _metaFalhas = metaOk ? 0 : 1;
+    alertar(
+      '🟢 *AppFut no ar!*\n⏰ ' + agora() +
+      '\n\n📊 Status:\n• Evolution: ✅\n• Meta: ' + (metaOk ? '✅' : '⚠️ ainda inicializando...')
+    ).catch(function(){});
+    setInterval(_checarMeta, 2 * 60 * 1000);
+  }, 12000);
 });
 
 process.on('SIGINT', function() {
