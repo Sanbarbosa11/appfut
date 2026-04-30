@@ -48,7 +48,7 @@ async function processarComandoAdmin(client, message, sender, texto) {
       await adminLink(client, message, sender);
       break;
     case 'sortear':
-      await adminSortear(client, message, sender);
+      await adminSortear(client, message, sender, args);
       break;
     default:
       await delay();
@@ -167,7 +167,8 @@ async function adminAjuda(client, message, sender) {
     '\ud83d\udd17 *Convite:*\n' +
     '\u2022 *admin link* \u2014 Reenviar link de cadastro\n\n' +
     '\ud83c\udfb2 *Times:*\n' +
-    '\u2022 *admin sortear* \u2014 Sortear dois times\n\n' +
+    '\u2022 *admin sortear* \u2014 Sortear dois times (divide igualmente)\n' +
+    '\u2022 *admin sortear 5* \u2014 Exatamente 5 por time (demais ficam como reservas)\n\n' +
     '\ud83d\udca1 _Exemplo: admin criar 26/04 20:00 - 22:00 14_'
   );
 }
@@ -547,8 +548,14 @@ async function verificarAdminGrupo(client, grupoId, senderId) {
 
 var DIAS_SORT = ['domingo','segunda-feira','terça-feira','quarta-feira','quinta-feira','sexta-feira','sábado'];
 
-async function adminSortear(client, message, sender) {
+async function adminSortear(client, message, sender, args) {
   await delay();
+
+  var tamTime = (args && args[1]) ? parseInt(args[1], 10) : 0;
+  if (tamTime && (isNaN(tamTime) || tamTime < 1)) {
+    await client.sendText(message.from, 'Tamanho de time inválido. Use: *admin sortear 5* ⚠️');
+    return;
+  }
 
   var resultado = await buscarGrupoAtivo(sender);
   if (resultado.multiplos) { await mostrarSelecaoGrupo(client, message, resultado.grupos, sender); return; }
@@ -577,9 +584,11 @@ async function adminSortear(client, message, sender) {
   var jogadores = confirmados.map(function(j) { return j.nome; })
     .concat(avulsos.map(function(a) { return a.nome; }));
 
-  if (jogadores.length < 2) {
+  var minJogadores = tamTime ? (tamTime * 2) : 2;
+  if (jogadores.length < minJogadores) {
     await client.sendText(message.from,
-      'Poucos jogadores confirmados para sortear (' + jogadores.length + '). Aguarde mais confirmações. ⚠️'
+      'Poucos jogadores confirmados para sortear ' + (tamTime ? tamTime + ' por time' : '') +
+      ' (' + jogadores.length + ' confirmados, mínimo ' + minJogadores + '). ⚠️'
     );
     return;
   }
@@ -590,9 +599,17 @@ async function adminSortear(client, message, sender) {
     var tmp = jogadores[i]; jogadores[i] = jogadores[j]; jogadores[j] = tmp;
   }
 
-  var meio  = Math.ceil(jogadores.length / 2);
-  var timeA = jogadores.slice(0, meio);
-  var timeB = jogadores.slice(meio);
+  var timeA, timeB, reservas;
+  if (tamTime) {
+    timeA   = jogadores.slice(0, tamTime);
+    timeB   = jogadores.slice(tamTime, tamTime * 2);
+    reservas = jogadores.slice(tamTime * 2);
+  } else {
+    var meio = Math.ceil(jogadores.length / 2);
+    timeA    = jogadores.slice(0, meio);
+    timeB    = jogadores.slice(meio);
+    reservas = [];
+  }
 
   var d = new Date(partida.data_partida);
   d = new Date(d.getTime() + d.getTimezoneOffset() * 60000);
@@ -605,7 +622,11 @@ async function adminSortear(client, message, sender) {
   timeA.forEach(function(n, i) { texto += (i+1) + '. ' + n + '\n'; });
   texto += '\n🔴 *Time B (' + timeB.length + '):*\n';
   timeB.forEach(function(n, i) { texto += (i+1) + '. ' + n + '\n'; });
-  texto += '\n🔄 _Para sortear novamente: *admin sortear*_';
+  if (reservas.length > 0) {
+    texto += '\n🟡 *Reservas (' + reservas.length + '):*\n';
+    reservas.forEach(function(n, i) { texto += (i+1) + '. ' + n + '\n'; });
+  }
+  texto += '\n🔄 _Para sortear novamente: *admin sortear' + (tamTime ? ' ' + tamTime : '') + '*_';
 
   await client.sendText(message.from, texto);
 }
