@@ -159,6 +159,13 @@ module.exports = function createClient(override) {
     sendMedia: function(instanceName, number, media) {
       var payload = Object.assign({ number: normalizarNumero(number) }, media);
       return request('POST', '/message/sendMedia/' + encodeURIComponent(instanceName), payload);
+    },
+    sendReaction: function(instanceName, remoteJid, msgId, reaction) {
+      var payload = {
+        key: { remoteJid: remoteJid, id: msgId },
+        reaction: reaction
+      };
+      return request('POST', '/message/sendReaction/' + encodeURIComponent(instanceName), payload);
     }
   };
 
