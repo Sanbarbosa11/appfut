@@ -222,7 +222,8 @@ function handle(req, res) {
                     (msg.videoMessage    && msg.videoMessage.caption)    || '';
 
     if (isGroup && !fromMe && text) {
-      var participant = key.participant || '';
+      // participantAlt contem o numero real quando participant e um JID @lid
+      var participant = key.participantAlt || key.participant || '';
       var pushName    = data.pushName || '';
       commands.processarComandoGrupo(remoteJid, text, participant, pushName, msg, msgId).catch(function(e) {
         console.error('[webhook] commands handler erro:', e.message);
