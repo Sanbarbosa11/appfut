@@ -34,22 +34,41 @@ function formatarDataHora(d) {
 // Busca grupo do admin — admin pode estar em varios grupos,
 // usa o mesmo sistema de sessao de adminSessoes do admin.js
 var db = require('../../database/connection');
+var { getGrupoAtivoId } = require('../../bot/commands/admin');
 
+// Busca o grupo ativo do admin usando a sessao existente do admin.js.
+// Se admin gerencia só 1 grupo, retorna ele. Se gerencia varios,
+// usa o que estiver ativo na sessao (mesmo que já selecionou com "admin grupo X").
 async function buscarGrupoDoAdmin(adminWid) {
-  var [rows] = await db.execute(
+  var grupoId = getGrupoAtivoId(adminWid);
+
+  if (grupoId) {
+    var [rows] = await db.execute(
+      'SELECT g.id, g.nome, g.valor_mensalidade, g.pix_chave ' +
+      'FROM grupos g WHERE g.id = ?',
+      [grupoId]
+    );
+    if (rows.length > 0) return rows[0];
+  }
+
+  // Fallback: admin tem so 1 grupo — retorna direto sem sessao
+  var [todos] = await db.execute(
     'SELECT g.id, g.nome, g.valor_mensalidade, g.pix_chave ' +
     'FROM grupos g JOIN admins a ON a.grupo_id = g.id ' +
-    'WHERE a.whatsapp_id = ? LIMIT 1',
+    'WHERE a.whatsapp_id = ?',
     [adminWid]
   );
-  return rows[0] || null;
+  if (todos.length === 1) return todos[0];
+
+  // Admin de multiplos grupos sem sessao ativa
+  return null;
 }
 
 // ─── Pagos ───────────────────────────────────────────────────────────────────
 
 async function finPagos(sender) {
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   var pagos = await queries.listarPagos(grupo.id);
   if (pagos.length === 0) {
@@ -74,7 +93,7 @@ async function finPagos(sender) {
 
 async function finPendentes(sender) {
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   var pendentes = await queries.listarPendentes(grupo.id);
   if (pendentes.length === 0) {
@@ -100,7 +119,7 @@ async function finPendentes(sender) {
 
 async function finInadimplentes(sender) {
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   var lista = await queries.listarInadimplentes(grupo.id);
   if (lista.length === 0) {
@@ -122,7 +141,7 @@ async function finInadimplentes(sender) {
 
 async function finAvulsos(sender) {
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   var pagos     = await queries.listarPagos(grupo.id);
   var pendentes = await queries.listarPendentes(grupo.id);
@@ -159,7 +178,7 @@ async function finAvulsos(sender) {
 
 async function finResumo(sender) {
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   var r   = await queries.resumoMes(grupo.id);
   var mes = queries.mesAtual().substring(0, 7);
@@ -185,9 +204,20 @@ async function finResumo(sender) {
 // ─── Configurar ──────────────────────────────────────────────────────────────
 
 async function finConfigurar(sender) {
+  var grupo = await buscarGrupoDoAdmin(sender);
+  if (!grupo) {
+    await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.');
+    return;
+  }
+
+  var valorStr = grupo.valor_mensalidade ? 'R$' + parseFloat(grupo.valor_mensalidade).toFixed(2) : '_não configurado_';
+  var pixStr   = grupo.pix_chave || '_não configurado_';
+
   await sendText(sender,
-    '⚙️ *Configuração financeira*\n\n' +
-    'Use os comandos abaixo:\n\n' +
+    '⚙️ *Config financeira — ' + grupo.nome + '*\n\n' +
+    '💵 Mensalidade atual: ' + valorStr + '\n' +
+    '🔑 Chave PIX atual: ' + pixStr + '\n\n' +
+    'Para alterar:\n' +
     '👉 *admin financeiro valor 50* — define mensalidade R$50\n' +
     '👉 *admin financeiro pix 11999999999* — define chave PIX'
   );
@@ -294,7 +324,7 @@ async function finComandoTexto(sender, args) {
   var sub = (args[0] || '').toLowerCase();
 
   var grupo = await buscarGrupoDoAdmin(sender);
-  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.'); return; }
+  if (!grupo) { await sendText(sender, '❌ Você não é admin de nenhum grupo.\nSe gerencia vários grupos, use *admin grupo NOME* para selecionar o ativo.'); return; }
 
   if (sub === 'valor') {
     var valor = parseFloat(args[1]);

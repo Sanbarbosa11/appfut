@@ -22,6 +22,14 @@ var { sendText: metaSendText, sendButtons } = require('../../bot/whatsapp/metaCl
 
 var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
 
+// ─── FLAG DE CONTROLE ────────────────────────────────────────────────────────
+// false = modo silencioso: processa e salva no banco, mas NAO reage no grupo
+//         e NAO envia mensagem de erro no grupo. Notifica so o admin no privado.
+// true  = producao: reage com emojis no grupo normalmente.
+// Mude para true quando validar com o admin e avisar os jogadores.
+var FINANCEIRO_ATIVO = false;
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Tipos de midia aceitos como comprovante
 var MIDIAS_VALIDAS = ['imageMessage', 'documentMessage', 'videoMessage'];
 
@@ -75,11 +83,15 @@ async function handlePaguei(remoteJid, participant, pushName, message, msgId) {
 
   // 1. Valida midia — sem comprovante nao processa
   if (!temMidia(message)) {
-    try {
-      await client.message.sendText(instanceName, remoteJid,
-        '❌ ' + (pushName || 'Jogador') + ', envie o comprovante junto com o comando *!paguei*.'
-      );
-    } catch (e) { /* nao critico */ }
+    // Modo silencioso: nao manda nada no grupo
+    if (FINANCEIRO_ATIVO) {
+      try {
+        await client.message.sendText(instanceName, remoteJid,
+          '❌ ' + (pushName || 'Jogador') + ', envie o comprovante junto com o comando *!paguei*.'
+        );
+      } catch (e) { /* nao critico */ }
+    }
+    console.log('[financeiro] !paguei sem midia de ' + (pushName || participant));
     return;
   }
 
@@ -90,30 +102,29 @@ async function handlePaguei(remoteJid, participant, pushName, message, msgId) {
   // 3. Busca jogador pelo whatsapp_id do participante
   var jogador = await queries.buscarJogador(participant);
   if (!jogador) {
-    await client.message.sendText(instanceName, remoteJid,
-      '❌ ' + (pushName || 'Jogador') + ', você não está cadastrado neste grupo.'
-    );
+    console.log('[financeiro] !paguei de jogador nao cadastrado: ' + participant);
     return;
   }
 
   // 4. Verifica duplicata no mes
   var existente = await queries.buscarMensalidadeExistente(grupo.id, jogador.id, queries.mesAtual());
   if (existente && existente.status === 'pago') {
-    await reagir(client, remoteJid, msgId, '✅');
+    if (FINANCEIRO_ATIVO) await reagir(client, remoteJid, msgId, '✅');
     return;
   }
 
-  // 5. Reage com ⏳ imediatamente
-  await reagir(client, remoteJid, msgId, '⏳');
+  // 5. Reage com ⏳ (so se FINANCEIRO_ATIVO)
+  if (FINANCEIRO_ATIVO) await reagir(client, remoteJid, msgId, '⏳');
 
-  // 6. Salva no banco
+  // 6. Salva no banco (sempre — mesmo em modo silencioso)
   await queries.registrarPaguei(grupo.id, jogador.id, participant, msgId);
+  console.log('[financeiro] !paguei registrado: ' + jogador.nome + ' / grupo ' + grupo.nome);
 
   // Busca o id recem inserido para usar nos botoes de confirmar/rejeitar
   var registro = await queries.buscarMensalidadeExistente(grupo.id, jogador.id, queries.mesAtual());
   var mensalidadeId = registro ? registro.id : 0;
 
-  // 7. Notifica admins via Meta
+  // 7. Notifica admins via Meta (sempre — independente da flag)
   var admins = await queries.buscarAdminsDoGrupo(grupo.id);
   var label  = labelPagador(jogador.nome, 'mensalista', null);
   await notificarAdmins(admins, label, grupo.nome, mensalidadeId);
@@ -124,11 +135,14 @@ async function handleAvulso(remoteJid, participant, pushName, avulsoNome, messag
 
   // 1. Valida midia
   if (!temMidia(message)) {
-    try {
-      await client.message.sendText(instanceName, remoteJid,
-        '❌ Envie o comprovante junto com *!avulso ' + avulsoNome + '*.'
-      );
-    } catch (e) { /* nao critico */ }
+    if (FINANCEIRO_ATIVO) {
+      try {
+        await client.message.sendText(instanceName, remoteJid,
+          '❌ Envie o comprovante junto com *!avulso ' + avulsoNome + '*.'
+        );
+      } catch (e) { /* nao critico */ }
+    }
+    console.log('[financeiro] !avulso sem midia de ' + (pushName || participant));
     return;
   }
 
@@ -140,8 +154,8 @@ async function handleAvulso(remoteJid, participant, pushName, avulsoNome, messag
   var jogador = await queries.buscarJogador(participant);
   if (!jogador) return;
 
-  // 4. Reage ⏳
-  await reagir(client, remoteJid, msgId, '⏳');
+  // 4. Reage ⏳ (so se FINANCEIRO_ATIVO)
+  if (FINANCEIRO_ATIVO) await reagir(client, remoteJid, msgId, '⏳');
 
   // 5. Salva avulso no banco
   await queries.registrarAvulso(grupo.id, jogador.id, avulsoNome, participant, msgId);
