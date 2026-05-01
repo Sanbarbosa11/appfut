@@ -131,7 +131,7 @@ async function resumoMes(grupoId) {
     'SELECT valor_mensalidade FROM grupos WHERE id = ?',
     [grupoId]
   );
-  var valor = (config[0] && config[0].valor_mensalidade) || 0;
+  var valor = parseFloat((config[0] && config[0].valor_mensalidade) || 0);
 
   var [totalAtivos] = await db.execute(
     'SELECT COUNT(*) AS total FROM grupo_jogadores WHERE grupo_id = ? AND ativo = TRUE',
