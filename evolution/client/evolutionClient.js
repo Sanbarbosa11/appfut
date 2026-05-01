@@ -162,7 +162,7 @@ module.exports = function createClient(override) {
     },
     sendReaction: function(instanceName, remoteJid, msgId, reaction) {
       var payload = {
-        key: { remoteJid: remoteJid, id: msgId },
+        key: { remoteJid: remoteJid, fromMe: false, id: msgId },
         reaction: reaction
       };
       return request('POST', '/message/sendReaction/' + encodeURIComponent(instanceName), payload);
