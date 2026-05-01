@@ -213,12 +213,18 @@ function handle(req, res) {
     var fromMe    = !!key.fromMe;
     var isGroup   = remoteJid.endsWith('@g.us');
     var msg       = data.message || {};
-    var text      = msg.conversation || (msg.extendedTextMessage && msg.extendedTextMessage.text) || '';
+    var msgId     = key.id || '';
+    // caption cobre imagens/docs enviados com texto junto (!paguei)
+    var text      = msg.conversation ||
+                    (msg.extendedTextMessage && msg.extendedTextMessage.text) ||
+                    (msg.imageMessage    && msg.imageMessage.caption)    ||
+                    (msg.documentMessage && msg.documentMessage.caption) ||
+                    (msg.videoMessage    && msg.videoMessage.caption)    || '';
 
     if (isGroup && !fromMe && text) {
       var participant = key.participant || '';
       var pushName    = data.pushName || '';
-      commands.processarComandoGrupo(remoteJid, text, participant, pushName).catch(function(e) {
+      commands.processarComandoGrupo(remoteJid, text, participant, pushName, msg, msgId).catch(function(e) {
         console.error('[webhook] commands handler erro:', e.message);
       });
     } else if (!isGroup && !fromMe) {

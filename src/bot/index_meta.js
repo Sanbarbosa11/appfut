@@ -27,6 +27,11 @@ var { lista }                  = require('./commands/lista');
 var { enviarMenuJogador, enviarMenuAdmin, enviarCriarPartida } = require('./commands/menu');
 var { alertar, agora } = require('./utils/alertar');
 var { adicionarAvulso, removerAvulso } = require('./commands/avulso');
+var { enviarMenuFinanceiro } = require('../financeiro/menu/menuFinanceiro');
+var {
+  finPagos, finPendentes, finInadimplentes, finAvulsos,
+  finResumo, finConfigurar, finConfirmarPagamento, finRejeitarPagamento, finComandoTexto
+} = require('../financeiro/handlers/adminFinanceiro');
 
 // ---------- rate limit para botao "Buscar partida" ----------
 var buscarTentativas = {};          // { sender: { count, windowStart } }
@@ -248,6 +253,17 @@ async function onMessage(message) {
       } catch(e) { /* nao bloquear fluxo principal */ }
     }
 
+    // Admin financeiro — menu ou subcomando
+    if (text === 'admin financeiro') {
+      await enviarMenuFinanceiro(sender);
+      return;
+    }
+    if (text.startsWith('admin financeiro ')) {
+      var finArgs = text.slice('admin financeiro '.length).trim().split(/\s+/);
+      await finComandoTexto(sender, finArgs);
+      return;
+    }
+
     // Admin com argumentos → processar comando direto
     if (text.startsWith('admin ')) {
       await processarComandoAdmin(client, message, sender, text);
@@ -359,6 +375,32 @@ async function onPollResponse(response, sender, opcao) {
         '\u2022 admin criar 25/04 20:00 14\n\n' +
         'Somente administradores do grupo podem criar partidas.'
       );
+
+    } else if (selectedId === 'fin_pagos') {
+      await finPagos(sender);
+
+    } else if (selectedId === 'fin_pendentes') {
+      await finPendentes(sender);
+
+    } else if (selectedId === 'fin_inadimplentes') {
+      await finInadimplentes(sender);
+
+    } else if (selectedId === 'fin_avulsos') {
+      await finAvulsos(sender);
+
+    } else if (selectedId === 'fin_resumo') {
+      await finResumo(sender);
+
+    } else if (selectedId === 'fin_configurar') {
+      await finConfigurar(sender);
+
+    } else if (selectedId.startsWith('fin_confirmar_')) {
+      var finConfId = parseInt(selectedId.replace('fin_confirmar_', ''), 10);
+      await finConfirmarPagamento(sender, finConfId);
+
+    } else if (selectedId.startsWith('fin_rejeitar_')) {
+      var finRejId = parseInt(selectedId.replace('fin_rejeitar_', ''), 10);
+      await finRejeitarPagamento(sender, finRejId);
 
     } else {
       // ID desconhecido → volta pro menu

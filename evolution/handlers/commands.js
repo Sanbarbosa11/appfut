@@ -7,6 +7,7 @@ var { processarComandoAdmin, getGrupoAtivoId } = require('./admin');
 var { confirmar }                              = require('./confirmar');
 var { cancelar }                               = require('./cancelar');
 var { adicionarAvulso, removerAvulso }         = require('./avulso');
+var { handlePaguei, handleAvulso: handleAvulsoFin } = require('../../src/financeiro/handlers/paguei');
 var createClient                               = require('../client/evolutionClient');
 
 var instanceName = process.env.PILOT_INSTANCE_NAME || 'appfut-piloto';
@@ -47,11 +48,27 @@ async function atualizarNomeSePendente(jid, pushName) {
 // GRUPO: !ajuda e !lista
 // ============================================================
 
-async function processarComandoGrupo(remoteJid, text, participant, pushName) {
+async function processarComandoGrupo(remoteJid, text, participant, pushName, message, msgId) {
   if (participant && pushName) {
     atualizarNomeSePendente(participant, pushName).catch(function() {});
   }
   var cmd = (text || '').trim().toLowerCase();
+
+  // Financeiro: !paguei com midia
+  if (cmd === '!paguei') {
+    await handlePaguei(remoteJid, participant, pushName, message, msgId);
+    return;
+  }
+
+  // Financeiro: !avulso NOME com midia
+  if (cmd.startsWith('!avulso ')) {
+    var nomeAvulsoFin = sanitizarNome(text.trim().slice(8));
+    if (nomeAvulsoFin) {
+      await handleAvulsoFin(remoteJid, participant, pushName, nomeAvulsoFin, message, msgId);
+    }
+    return;
+  }
+
   if (cmd !== '!ajuda' && cmd !== '!lista') return;
 
   var client = createClient();
