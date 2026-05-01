@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.evolution') });
+require('dotenv').config({ path: require('path').resolve(__dirname, '../.env.evolution'), override: true });
 
 var mysql = require('mysql2/promise');
 
