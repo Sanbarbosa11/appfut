@@ -41,13 +41,17 @@ var { getGrupoAtivoId } = require('../../bot/commands/admin');
 // usa o que estiver ativo na sessao (mesmo que já selecionou com "admin grupo X").
 async function buscarGrupoDoAdmin(adminWid) {
   var grupoId = getGrupoAtivoId(adminWid);
+  console.log('[financeiro] buscarGrupoDoAdmin — admin:', adminWid, 'grupoId sessao:', grupoId);
 
   if (grupoId) {
+    // Valida que o admin realmente pertence a esse grupo (seguranca)
     var [rows] = await db.execute(
       'SELECT g.id, g.nome, g.valor_mensalidade, g.pix_chave ' +
-      'FROM grupos g WHERE g.id = ?',
-      [grupoId]
+      'FROM grupos g JOIN admins a ON a.grupo_id = g.id ' +
+      'WHERE g.id = ? AND a.whatsapp_id = ?',
+      [grupoId, adminWid]
     );
+    console.log('[financeiro] grupo encontrado pela sessao:', rows.length > 0 ? rows[0].nome : 'nenhum');
     if (rows.length > 0) return rows[0];
   }
 
@@ -58,6 +62,7 @@ async function buscarGrupoDoAdmin(adminWid) {
     'WHERE a.whatsapp_id = ?',
     [adminWid]
   );
+  console.log('[financeiro] fallback — grupos encontrados:', todos.length);
   if (todos.length === 1) return todos[0];
 
   // Admin de multiplos grupos sem sessao ativa
