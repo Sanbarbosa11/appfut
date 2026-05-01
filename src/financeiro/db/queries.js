@@ -23,6 +23,17 @@ async function buscarJogador(whatsappId) {
   return rows[0] || null;
 }
 
+// Fallback para JIDs @lid: busca pelo nome dentro do grupo
+async function buscarJogadorPorNome(nome, grupoId) {
+  var [rows] = await db.execute(
+    'SELECT j.id, j.nome FROM jogadores j ' +
+    'JOIN grupo_jogadores gj ON gj.jogador_id = j.id ' +
+    'WHERE gj.grupo_id = ? AND j.nome = ? AND gj.ativo = TRUE LIMIT 1',
+    [grupoId, nome]
+  );
+  return rows[0] || null;
+}
+
 // Busca grupo pelo whatsapp_id (grupo do Evolution)
 async function buscarGrupo(whatsappId) {
   var [rows] = await db.execute(
@@ -179,6 +190,7 @@ async function salvarConfig(grupoId, campo, valor) {
 module.exports = {
   mesAtual,
   buscarJogador,
+  buscarJogadorPorNome,
   buscarGrupo,
   buscarMensalidadeExistente,
   registrarPaguei,

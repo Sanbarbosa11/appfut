@@ -100,9 +100,18 @@ async function handlePaguei(remoteJid, participant, pushName, message, msgId) {
   if (!grupo) return;
 
   // 3. Busca jogador pelo whatsapp_id do participante
+  // JIDs @lid sao identificadores de privacidade do WhatsApp — nao tem numero real.
+  // Nesses casos tentamos pelo pushName como fallback de identificacao.
   var jogador = await queries.buscarJogador(participant);
+  if (!jogador && pushName) {
+    jogador = await queries.buscarJogadorPorNome(pushName, grupo.id);
+  }
   if (!jogador) {
-    console.log('[financeiro] !paguei de jogador nao cadastrado: ' + participant);
+    console.log('[financeiro] !paguei de jogador nao encontrado: ' + participant + ' / ' + pushName);
+    // Notifica admin mesmo sem encontrar o jogador para nao perder o comprovante
+    if (FINANCEIRO_ATIVO) await reagir(client, remoteJid, msgId, '⏳');
+    var admins = await queries.buscarAdminsDoGrupo(grupo.id);
+    await notificarAdmins(admins, (pushName || participant) + ' ⚠️ (nao cadastrado)', grupo.nome, 0);
     return;
   }
 
@@ -161,7 +170,8 @@ async function handleAvulso(remoteJid, participant, pushName, avulsoNome, messag
   await queries.registrarAvulso(grupo.id, jogador.id, avulsoNome, participant, msgId);
 
   // Busca id do registro para os botoes
-  var [rows] = await require('../../../evolution/database/connection').execute(
+  var db = require('../../database/connection');
+  var [rows] = await db.execute(
     'SELECT id FROM mensalidades WHERE grupo_id = ? AND jogador_id = ? AND avulso_nome = ? AND mes_referencia = ? ORDER BY id DESC LIMIT 1',
     [grupo.id, jogador.id, avulsoNome, queries.mesAtual()]
   );
